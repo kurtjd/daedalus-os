@@ -3,7 +3,7 @@
 #include "daedalus_os.h"
 #include "windows.h"
 
-#define IDLE_os_task_stack_SZ 16
+#define IDLE_TASK_STACK_SZ 16
 #define READY_GROUP_WIDTH 16
 
 /* Private */
@@ -15,10 +15,10 @@ static struct os_tcb *running_task = NULL;
 // Helps quickly track which priorities have ready tasks
 static struct os_tcb *priority_list[MAX_PRIORITY_LEVEL];
 static uint16_t ready_group;
-static uint16_t ready_table[MAX_PRIORITY_LEVEL / 16 + 1];
+static uint16_t ready_table[MAX_PRIORITY_LEVEL / READY_GROUP_WIDTH + 1];
 
 // Related to the idle stack
-static os_task_stack idle_os_task_stack[IDLE_os_task_stack_SZ];
+static os_task_stack idle_os_task_stack[IDLE_TASK_STACK_SZ];
 static uint32_t ticks_in_idle = 0;
 
 static void os_idle_task_entry(void *data) {
@@ -180,7 +180,7 @@ static void ClockTick(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime) {
 
 /* Public */
 void os_init(void) {
-    os_task_create(os_idle_task_entry, NULL, idle_os_task_stack, IDLE_os_task_stack_SZ, 0);
+    os_task_create(os_idle_task_entry, NULL, idle_os_task_stack, IDLE_TASK_STACK_SZ, 0);
 }
 
 void os_start(void) {
@@ -197,7 +197,7 @@ void os_start(void) {
     }
 }
 
-void os_task_create(os_task_entry entry, void *arg, os_task_stack *stack_base, size_t stack_sz, uint8_t priority) {
+uint8_t os_task_create(os_task_entry entry, void *arg, os_task_stack *stack_base, size_t stack_sz, uint8_t priority) {
     assert(task_count < MAX_NUM_TASKS);
 
     struct os_tcb task = {
@@ -207,7 +207,8 @@ void os_task_create(os_task_entry entry, void *arg, os_task_stack *stack_base, s
         .stack_sz = stack_sz,
         .priority = priority,
         .next_task = NULL,
-        .timeout = 0
+        .timeout = 0,
+        .id = task_count
     };
 
     tasks[task_count] = task;
@@ -218,6 +219,8 @@ void os_task_create(os_task_entry entry, void *arg, os_task_stack *stack_base, s
     // Push entry as PC onto task's stack
     // Push stack_base+stack_sz as SP onto task's stack
     // Push other registers onto task's stack
+
+    return task.id;
 }
 
 void os_task_delay(uint16_t clock_ticks) {
@@ -234,6 +237,10 @@ void os_task_yield(void) {
     // Yielding has little use in preemptive RTOS as highest priority task is already running
     // However useful if you have roud-robin tasks and want to immediately call the next one
     os_schedule();
+}
+
+const struct os_tcb *os_task_query(uint8_t task_id) {
+    return &tasks[task_id];
 }
 
 /*
