@@ -1,6 +1,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include "daedalus_os.h"
+#include "windows.h"
 
 #define IDLE_TASK_STACK_SZ 16
 #define READY_GROUP_WIDTH 16
@@ -31,7 +32,9 @@ static void os_task_insert_priority_list(struct tcb *task) {
     if (!priority_list[task->priority]) {
         priority_list[task->priority] = task;
     } else {
+        struct tcb *next = priority_list[task->priority]->next_task;
         priority_list[task->priority]->next_task = task;
+        task->next_task = next;
     }
 }
 
@@ -104,12 +107,22 @@ static struct tcb *os_get_next_ready_task(void) {
         return NULL;
     
     // Now find task associated with that priority that is ready
-    struct tcb *task = priority_list[priority];
+    struct tcb *task;
+    if (running_task && priority == running_task->priority && running_task->next_task)
+        task = running_task->next_task;
+    else
+        task = priority_list[priority];
     assert(task); // Should have at least one task associated with that priority
 
+    // Not this simple for round-robin...
     while (task->state != TASK_READY) {
         task = task->next_task;
-        assert(task); // Should always find a task that is ready
+
+        // Should always find a task that is ready if priority is greater than running task priority
+        assert(task || (running_task && priority == running_task->priority));
+
+        if (!task)
+            task = priority_list[priority];
     }
 
     return task;
@@ -146,12 +159,21 @@ static void os_schedule(void) {
     OS_EXIT_CRITICAL();
 }
 
+static void ClockTick(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime) {
+    (void)hwnd;
+    (void)uMsg;
+    (void)idEvent;
+    (void)dwTime;
+
+    os_schedule();
+}
+
 /* Public */
 void os_init(void) {
     os_task_create(idle_task_entry, NULL, idle_task_stack, IDLE_TASK_STACK_SZ, 0);
 }
 
-struct tcb *os_task_create(task_entry entry, void *arg, task_stack *stack_base, size_t stack_sz, uint8_t priority) {
+void os_task_create(task_entry entry, void *arg, task_stack *stack_base, size_t stack_sz, uint8_t priority) {
     assert(task_count < MAX_NUM_TASKS);
 
     struct tcb task = {
@@ -168,18 +190,23 @@ struct tcb *os_task_create(task_entry entry, void *arg, task_stack *stack_base, 
     os_task_set_state(&tasks[task_count], TASK_READY);
     task_count++;
 
-    // Tmp
-    return &tasks[task_count - 1];
-
     // Push entry as PC onto task's stack
     // Push stack_base+stack_sz as SP onto task's stack
     // Push other registers onto task's stack
 }
 
 void os_start(void) {
-    os_schedule();
+    //os_schedule();
 
     // Enable SysTick interrupt
+
+    // But for now use hacky Windows timer
+    SetTimer(NULL, 0, 1000 / CLOCK_RATE_HZ, ClockTick);
+    MSG msg;
+    while (GetMessage(&msg, NULL, 0, 0)) {
+        TranslateMessage(&msg);
+        DispatchMessage(&msg);
+    }
 }
 
 /* Testing functions */

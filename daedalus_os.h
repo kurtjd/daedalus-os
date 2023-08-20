@@ -7,6 +7,7 @@
 /* Config (modified by user) */
 #define MAX_NUM_TASKS 32
 #define MAX_PRIORITY_LEVEL 31
+#define CLOCK_RATE_HZ 2
 
 /* Max Supported Values (should NOT be modified by user) */
 #define MAX_SUPPORTED_PRIORITY_LEVEL 255
@@ -21,7 +22,7 @@ typedef uint32_t task_stack;
 
 /* Public Functions */
 void os_init(void);
-struct tcb *os_task_create(task_entry entry, void *arg, task_stack *stack_base, size_t stack_sz, uint8_t priority);
+void os_task_create(task_entry entry, void *arg, task_stack *stack_base, size_t stack_sz, uint8_t priority);
 void os_start(void);
 
 /* These will be made private, here for testing */
