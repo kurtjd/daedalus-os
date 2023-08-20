@@ -3,36 +3,36 @@
 #include "daedalus_os.h"
 #include "windows.h"
 
-#define IDLE_TASK_STACK_SZ 16
+#define IDLE_os_task_stack_SZ 16
 #define READY_GROUP_WIDTH 16
 
 /* Private */
 // Task-related variables
-static struct tcb tasks[MAX_NUM_TASKS];
+static struct os_tcb tasks[MAX_NUM_TASKS];
 static int task_count = 0;
-static struct tcb *running_task = NULL;
+static struct os_tcb *running_task = NULL;
 
 // Helps quickly track which priorities have ready tasks
-static struct tcb *priority_list[MAX_PRIORITY_LEVEL];
+static struct os_tcb *priority_list[MAX_PRIORITY_LEVEL];
 static uint16_t ready_group;
 static uint16_t ready_table[MAX_PRIORITY_LEVEL / 16 + 1];
 
 // Related to the idle stack
-static task_stack idle_task_stack[IDLE_TASK_STACK_SZ];
+static os_task_stack idle_os_task_stack[IDLE_os_task_stack_SZ];
 static uint32_t ticks_in_idle = 0;
 
-static void idle_task_entry(void *data) {
+static void os_idle_task_entry(void *data) {
     (void)data;
 
     ticks_in_idle++;
     printf("Idling\n");
 }
 
-static void os_task_insert_priority_list(struct tcb *task) {
+static void os_task_insert_priority_list(struct os_tcb *task) {
     if (!priority_list[task->priority]) {
         priority_list[task->priority] = task;
     } else {
-        struct tcb *next = priority_list[task->priority]->next_task;
+        struct os_tcb *next = priority_list[task->priority]->next_task;
         priority_list[task->priority]->next_task = task;
         task->next_task = next;
     }
@@ -50,7 +50,7 @@ static void os_ready_list_set(uint8_t priority) {
 }
 
 static void os_ready_list_clear(uint8_t priority) {
-    struct tcb *task = priority_list[priority];
+    struct os_tcb *task = priority_list[priority];
     assert(task != NULL); // We shouldn't ever call this on a priority that has no tasks assigned to it
     
     // Have to be sure there are no tasks at this priority level ready to run
@@ -68,7 +68,7 @@ static void os_ready_list_clear(uint8_t priority) {
         ready_group &= ~(1 << ready_group_idx);
 }
 
-static void os_task_set_state(struct tcb *task, enum TASK_STATE state) {
+static void os_task_set_state(struct os_tcb *task, enum OS_TASK_STATE state) {
     task->state = state;
 
     switch (state) {
@@ -84,7 +84,7 @@ static void os_task_set_state(struct tcb *task, enum TASK_STATE state) {
     }
 }
 
-static struct tcb *os_get_next_ready_task(void) {
+static struct os_tcb *os_get_next_ready_task(void) {
     // No task is ready to run
     if (ready_group == 0)
         return NULL;
@@ -107,7 +107,7 @@ static struct tcb *os_get_next_ready_task(void) {
         return NULL;
     
     // Now find task associated with that priority that is ready
-    struct tcb *task;
+    struct os_tcb *task;
     if (running_task && priority == running_task->priority && running_task->next_task)
         task = running_task->next_task;
     else
@@ -128,7 +128,7 @@ static struct tcb *os_get_next_ready_task(void) {
     return task;
 }
 
-static void os_sw_context(struct tcb *next_task) {
+static void os_sw_context(struct os_tcb *next_task) {
     (void)next_task;
 
     // ASM store context of current task
@@ -139,7 +139,7 @@ static void os_sw_context(struct tcb *next_task) {
 static void os_schedule(void) {
     OS_ENTER_CRITICAL();
 
-    struct tcb *next_task = os_get_next_ready_task();
+    struct os_tcb *next_task = os_get_next_ready_task();
 
     // Make sure there is a higher priority task that's ready
     if (next_task) {
@@ -165,34 +165,22 @@ static void ClockTick(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime) {
     (void)idEvent;
     (void)dwTime;
 
+    // Naive approach, optimize later (don't want to have to loop over every task, only tasks in a timeout list)
+    for (int i = 0; i < task_count; i++) {
+        struct os_tcb *task = &tasks[i];
+        if (task->timeout > 0)
+            task->timeout--;
+        
+        if (task->timeout == 0)
+            os_task_set_state(task, TASK_READY);
+    }
+
     os_schedule();
 }
 
 /* Public */
 void os_init(void) {
-    os_task_create(idle_task_entry, NULL, idle_task_stack, IDLE_TASK_STACK_SZ, 0);
-}
-
-void os_task_create(task_entry entry, void *arg, task_stack *stack_base, size_t stack_sz, uint8_t priority) {
-    assert(task_count < MAX_NUM_TASKS);
-
-    struct tcb task = {
-        .entry = entry,
-        .arg = arg,
-        .stack_base = stack_base,
-        .stack_sz = stack_sz,
-        .priority = priority,
-        .next_task = NULL
-    };
-
-    tasks[task_count] = task;
-    os_task_insert_priority_list(&tasks[task_count]);
-    os_task_set_state(&tasks[task_count], TASK_READY);
-    task_count++;
-
-    // Push entry as PC onto task's stack
-    // Push stack_base+stack_sz as SP onto task's stack
-    // Push other registers onto task's stack
+    os_task_create(os_idle_task_entry, NULL, idle_os_task_stack, IDLE_os_task_stack_SZ, 0);
 }
 
 void os_start(void) {
@@ -209,44 +197,78 @@ void os_start(void) {
     }
 }
 
-/* Testing functions */
-void os_task_set_state_pub(struct tcb *task, enum TASK_STATE state) {
-    os_task_set_state(task, state);
+void os_task_create(os_task_entry entry, void *arg, os_task_stack *stack_base, size_t stack_sz, uint8_t priority) {
+    assert(task_count < MAX_NUM_TASKS);
+
+    struct os_tcb task = {
+        .entry = entry,
+        .arg = arg,
+        .stack_base = stack_base,
+        .stack_sz = stack_sz,
+        .priority = priority,
+        .next_task = NULL,
+        .timeout = 0
+    };
+
+    tasks[task_count] = task;
+    os_task_insert_priority_list(&tasks[task_count]);
+    os_task_set_state(&tasks[task_count], TASK_READY);
+    task_count++;
+
+    // Push entry as PC onto task's stack
+    // Push stack_base+stack_sz as SP onto task's stack
+    // Push other registers onto task's stack
+}
+
+void os_task_delay(uint16_t clock_ticks) {
+    OS_ENTER_CRITICAL();
+    running_task->timeout = clock_ticks;
+    os_task_set_state(running_task, TASK_BLOCKED);
+    OS_EXIT_CRITICAL();
+
+    os_schedule();
+}
+
+void os_task_yield(void) {
+    // For now just immediately call scheduler
+    // Yielding has little use in preemptive RTOS as highest priority task is already running
+    // However useful if you have roud-robin tasks and want to immediately call the next one
+    os_schedule();
 }
 
 /*
-void os_mutex_init(struct mutex *mutex) {
-    mutex->holding_task = NULL;
-    mutex->blocked_count = 0;
+void os_os_os_mutex_init(struct os_os_mutex *os_os_mutex) {
+    os_os_mutex->holding_task = NULL;
+    os_os_mutex->blocked_count = 0;
 }
 
-void os_mutex_acquire(struct mutex *mutex) {
+void os_os_os_mutex_acquire(struct os_os_mutex *os_os_mutex) {
     OS_ENTER_CRITICAL();
 
-    if (!mutex->holding_task) {
-        mutex->holding_task = running_task;
+    if (!os_os_mutex->holding_task) {
+        os_os_mutex->holding_task = running_task;
 
         OS_EXIT_CRITICAL();
     } else {
         running_task->state = TASK_BLOCKED;
-        mutex->blocked_list[mutex->blocked_count++] = running_task;
+        os_os_mutex->blocked_list[os_os_mutex->blocked_count++] = running_task;
 
         OS_EXIT_CRITICAL();
         os_schedule(); // How prevent os_schedule from going on task's stack?
     }
 }
 
-void os_mutex_release(struct mutex *mutex) {
+void os_os_os_mutex_release(struct os_os_mutex *os_os_mutex) {
     OS_ENTER_CRITICAL();
 
-    if (running_task != mutex->holding_task)
+    if (running_task != os_os_mutex->holding_task)
         return;
     
-    mutex->holding_task = NULL;
+    os_os_mutex->holding_task = NULL;
 
-    for (int i = 0; i < mutex->blocked_count; i++)
-        mutex->blocked_list[i]->state = TASK_READY;
-    mutex->blocked_count = 0;
+    for (int i = 0; i < os_os_mutex->blocked_count; i++)
+        os_os_mutex->blocked_list[i]->state = TASK_READY;
+    os_os_mutex->blocked_count = 0;
 
     OS_EXIT_CRITICAL();
     os_schedule();
