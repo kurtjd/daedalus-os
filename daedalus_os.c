@@ -4,7 +4,6 @@
 #include "windows.h"
 
 #define IDLE_TASK_STACK_SZ 16
-#define READY_GROUP_WIDTH 16
 
 /* Private */
 // Task-related variables
@@ -15,9 +14,9 @@ static struct os_tcb *running_task = NULL;
 // Helps quickly track which priorities have ready tasks
 static struct os_tcb *priority_list[MAX_PRIORITY_LEVEL];
 static uint16_t ready_group;
-static uint16_t ready_table[MAX_PRIORITY_LEVEL / READY_GROUP_WIDTH + 1];
+static uint16_t ready_table[PRIORITY_TABLE_SZ];
 
-// Related to the idle stack
+// Related to the idle task
 static os_task_stack idle_os_task_stack[IDLE_TASK_STACK_SZ];
 static uint32_t ticks_in_idle = 0;
 
@@ -28,6 +27,7 @@ static void os_idle_task_entry(void *data) {
     printf("Idling\n");
 }
 
+// TODO: Merge these list functions
 static void os_task_insert_priority_list(struct os_tcb *task) {
     if (!priority_list[task->priority]) {
         priority_list[task->priority] = task;
@@ -36,6 +36,32 @@ static void os_task_insert_priority_list(struct os_tcb *task) {
         priority_list[task->priority]->next_task = task;
         task->next_task = next;
     }
+}
+
+static void os_task_insert_block_list(struct os_tcb *task, struct os_tcb **block_list) {
+    if (!*block_list) {
+        *block_list = task;
+    } else {
+        /*struct os_tcb *next = (*block_list)->next_blocked;
+        (*block_list)->next_blocked = task;
+        task->next_blocked = next;*/
+        (*block_list)->prev_blocked = task;
+        task->next_blocked = *block_list;
+        *block_list = task;
+    }
+}
+
+static void os_task_remove_block_list(struct os_tcb *task, struct os_tcb **block_list) {
+    if (task->next_blocked)
+        task->next_blocked->prev_blocked = task->prev_blocked;
+
+    if (task->prev_blocked)
+        task->prev_blocked->next_blocked = task->next_blocked;
+    else
+        *block_list = task->next_blocked;
+    
+    task->next_blocked = NULL;
+    task->prev_blocked = NULL;
 }
 
 static void os_ready_list_set(uint8_t priority) {
@@ -77,6 +103,7 @@ static void os_task_set_state(struct os_tcb *task, enum OS_TASK_STATE state) {
         break;
     case TASK_BLOCKED:
         running_task = NULL;
+        os_ready_list_clear(task->priority);
         break;
     case TASK_RUNNING:
         os_ready_list_clear(task->priority);
@@ -98,7 +125,7 @@ static struct os_tcb *os_get_next_ready_task(void) {
     // Then find the highest priority that has a task ready
     tmp = ready_table[priority];
     assert(tmp != 0); // Shouldn't have a group ready but no priorities in that group ready
-    priority *= READY_GROUP_WIDTH;
+    priority *= PRIORITY_GROUP_WIDTH;
     while (tmp >>= 1)
         priority++;
     
@@ -114,7 +141,6 @@ static struct os_tcb *os_get_next_ready_task(void) {
         task = priority_list[priority];
     assert(task); // Should have at least one task associated with that priority
 
-    // Not this simple for round-robin...
     while (task->state != TASK_READY) {
         task = task->next_task;
 
@@ -149,14 +175,25 @@ static void os_schedule(void) {
         if (running_task)
             os_task_set_state(running_task, TASK_READY);
 
-        os_sw_context(next_task);
         running_task = next_task;
+        os_sw_context(next_task);
     }
+
+    OS_EXIT_CRITICAL();
 
     // For now just execute task (would normally return to new context)
     running_task->entry(running_task->arg);
+}
 
-    OS_EXIT_CRITICAL();
+static void os_mutex_assign(struct os_mutex *mutex, struct os_tcb *task) {
+    mutex->holding_task = task;
+    mutex->holding_task_orig_pri = task->priority;
+}
+
+static void os_task_wake(struct os_tcb *task) {
+    task->waiting = false;
+    task->timeout = 0;
+    os_task_set_state(task, TASK_READY);
 }
 
 static void ClockTick(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime) {
@@ -207,7 +244,10 @@ uint8_t os_task_create(os_task_entry entry, void *arg, os_task_stack *stack_base
         .stack_sz = stack_sz,
         .priority = priority,
         .next_task = NULL,
+        .next_blocked = NULL,
+        .prev_blocked = NULL,
         .timeout = 0,
+        .waiting = false,
         .id = task_count
     };
 
@@ -223,9 +263,9 @@ uint8_t os_task_create(os_task_entry entry, void *arg, os_task_stack *stack_base
     return task.id;
 }
 
-void os_task_delay(uint16_t clock_ticks) {
+void os_task_sleep(uint16_t ticks) {    
     OS_ENTER_CRITICAL();
-    running_task->timeout = clock_ticks;
+    running_task->timeout = ticks;
     os_task_set_state(running_task, TASK_BLOCKED);
     OS_EXIT_CRITICAL();
 
@@ -243,41 +283,54 @@ const struct os_tcb *os_task_query(uint8_t task_id) {
     return &tasks[task_id];
 }
 
-/*
-void os_os_os_mutex_init(struct os_os_mutex *os_os_mutex) {
-    os_os_mutex->holding_task = NULL;
-    os_os_mutex->blocked_count = 0;
+void os_mutex_create(struct os_mutex *mutex) {
+    mutex->holding_task = NULL;
+    mutex->blocked_list = NULL;
 }
 
-void os_os_os_mutex_acquire(struct os_os_mutex *os_os_mutex) {
-    OS_ENTER_CRITICAL();
-
-    if (!os_os_mutex->holding_task) {
-        os_os_mutex->holding_task = running_task;
-
-        OS_EXIT_CRITICAL();
+bool os_mutex_acquire(struct os_mutex *mutex, uint16_t timeout_ticks) {
+    if (!mutex->holding_task) {
+        os_mutex_assign(mutex, running_task);
+        return true;
     } else {
-        running_task->state = TASK_BLOCKED;
-        os_os_mutex->blocked_list[os_os_mutex->blocked_count++] = running_task;
+        // TODO: Handle priority inheritance (make holding task pri = running task pri)
+        running_task->waiting = true;
+        
+        os_task_insert_block_list(running_task, &mutex->blocked_list);
+        os_task_sleep(timeout_ticks);
+        os_task_remove_block_list(running_task, &mutex->blocked_list);
 
-        OS_EXIT_CRITICAL();
-        os_schedule(); // How prevent os_schedule from going on task's stack?
+        // Task either gets here via timeout or woken by mutex release
+        // Commented out until context switch implemented
+        /*if (!running_task->waiting) {
+            os_mutex_assign(mutex, running_task);
+            return true;
+        }*/
+
+        // Notifies caller that acquire timed out
+        return false;
     }
 }
 
-void os_os_os_mutex_release(struct os_os_mutex *os_os_mutex) {
-    OS_ENTER_CRITICAL();
+void os_mutex_release(struct os_mutex *mutex) {
+    mutex->holding_task = NULL;
+    // TODO: Handle resetting priority back to original
 
-    if (running_task != os_os_mutex->holding_task)
-        return;
-    
-    os_os_mutex->holding_task = NULL;
+    // Wanted to use tables like for readying tasks but tasks sharing priorities makes that difficult...
+    struct os_tcb *task = mutex->blocked_list;
+    if (task) {
+        uint8_t high_pri = 0;
+        struct os_tcb *high_task = NULL;
 
-    for (int i = 0; i < os_os_mutex->blocked_count; i++)
-        os_os_mutex->blocked_list[i]->state = TASK_READY;
-    os_os_mutex->blocked_count = 0;
+        while (task) {
+            if (task->priority >= high_pri) {
+                high_pri = task->priority;
+                high_task = task;
+                task = task->next_blocked;
+            }
+        }
 
-    OS_EXIT_CRITICAL();
-    os_schedule();
+        os_task_wake(high_task);
+        os_schedule();
+    }
 }
-*/
