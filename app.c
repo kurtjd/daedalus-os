@@ -32,9 +32,8 @@ int main(void) {
 
     os_init();
     os_task_create(print_task, "I just print", task_stack, TASK_STACK_SZ, 1);
-    os_task_create(mutex_task, "MutA", task_stack, TASK_STACK_SZ, 2);
-    os_task_create(mutex_task, "MutB", task_stack, TASK_STACK_SZ, 2);
-    os_task_create(mutex_task, "MutC", task_stack, TASK_STACK_SZ, 2);
+    os_task_create(mutex_task, "Mutex A", task_stack, TASK_STACK_SZ, 2);
+    os_task_create(mutex_task, "Mutex B", task_stack, TASK_STACK_SZ, 2);
 
     os_start();
 

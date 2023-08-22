@@ -29,8 +29,7 @@ typedef uint32_t os_task_stack;
 /* Enums */
 enum OS_TASK_STATE {
     TASK_BLOCKED,
-    TASK_READY,
-    TASK_RUNNING
+    TASK_READY
 };
 
 /* Structs */
@@ -43,8 +42,7 @@ struct os_tcb {
     uint8_t priority;
     enum OS_TASK_STATE state;
     struct os_tcb *next_task;
-    struct os_tcb *next_blocked;
-    struct os_tcb *prev_blocked;
+    struct os_tcb *prev_task;
     uint16_t timeout;
     bool waiting;
     uint8_t id;
