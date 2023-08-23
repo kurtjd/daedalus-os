@@ -285,7 +285,7 @@ bool os_mutex_acquire(struct os_mutex *mutex, uint16_t timeout_ticks)
 		os_mutex_assign(mutex, running_task);
 		return true;
 	} else {
-		os_mutex_handle_block(mutex, timeout_ticks);
+		return os_mutex_handle_block(mutex, timeout_ticks);
 	}
 }
 
