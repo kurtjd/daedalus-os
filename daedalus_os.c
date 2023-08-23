@@ -80,11 +80,14 @@ static uint8_t os_get_highest_ready_pri(void)
 static struct os_tcb *os_get_next_ready_task(uint8_t priority)
 {
 	// Allows for round-robin
-	if (running_task && running_task->priority == priority && running_task->next_task)
+	if (running_task && running_task->priority == priority
+		&& running_task->next_task)
 		return running_task->next_task;
 
-	// Return NULL if the next task is the same as running task so context-switch doesn't happen
-	return running_task != ready_list[priority] ? ready_list[priority] : NULL;
+	if (running_task != ready_list[priority])
+		return ready_list[priority];
+	else
+		return NULL;
 }
 
 static void os_sw_context(struct os_tcb *next_task)
@@ -121,7 +124,30 @@ static void os_mutex_assign(struct os_mutex *mutex, struct os_tcb *task)
 	mutex->holding_task_orig_pri = task->priority;
 }
 
-static struct os_tcb *os_mutex_get_high_pri_task(const struct os_mutex *mutex) {
+static bool os_mutex_handle_block(struct os_mutex *mutex,
+					uint16_t timeout_ticks)
+{
+	// Priority inheritance: Set holding task to running task's priority
+	mutex->holding_task->priority = running_task->priority;
+	running_task->waiting = true;
+	
+	os_task_insert_into_list(running_task, &mutex->blocked_list);
+	os_task_sleep(timeout_ticks);
+	os_task_remove_from_list(running_task, &mutex->blocked_list);
+
+	// Task either gets here via timeout or woken by mutex release
+	// Commented out until context switch implemented
+	/*if (!running_task->waiting) {
+		os_mutex_assign(mutex, running_task);
+		return true;
+	}*/
+
+	// Notifies caller that acquire timed out
+	return false;
+}
+
+static struct os_tcb *os_mutex_get_high_pri_task(const struct os_mutex *mutex)
+{
 	struct os_tcb *task = mutex->blocked_list;
 	if (!task)
 		return NULL;
@@ -144,12 +170,13 @@ static void os_tick(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime)
 	(void)idEvent;
 	(void)dwTime;
 
-	// Naive approach, optimize later (don't want to have to loop over every task, only tasks in a timeout list)
+	/* Naive approach, optimize later (don't want to have to loop over
+	 * every task, only tasks in a timeout list) */
 	for (int i = 0; i < task_count; i++) {
 		struct os_tcb *task = &tasks[i];
+
 		if (task->timeout > 0) {
 			task->timeout--;
-			
 			if (task->timeout == 0)
 				os_task_set_state(task, TASK_READY);
 		}
@@ -161,7 +188,8 @@ static void os_tick(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime)
 /* Public */
 void os_init(void)
 {
-	os_task_create(os_idle_task_entry, NULL, idle_os_task_stack, IDLE_TASK_STACK_SZ, 0);
+	os_task_create(os_idle_task_entry, NULL, idle_os_task_stack,
+			IDLE_TASK_STACK_SZ, 0);
 }
 
 void os_start(void)
@@ -178,7 +206,9 @@ void os_start(void)
 	}
 }
 
-uint8_t os_task_create(os_task_entry entry, void *arg, os_task_stack *stack_base, size_t stack_sz, uint8_t priority)
+uint8_t os_task_create(os_task_entry entry, void *arg,
+			os_task_stack *stack_base, size_t stack_sz,
+			uint8_t priority)
 {
 	assert(task_count < MAX_NUM_TASKS);
 
@@ -202,7 +232,9 @@ uint8_t os_task_create(os_task_entry entry, void *arg, os_task_stack *stack_base
 	// Push stack_base+stack_sz as SP onto task's stack
 	// Push other registers onto task's stack
 
-	highest_priority = priority > highest_priority ? priority : highest_priority;
+	if (priority > highest_priority)
+		highest_priority = priority;
+
 	return task.id;
 }
 
@@ -229,20 +261,11 @@ static void os_task_wake(struct os_tcb *task)
 
 void os_task_yield(void)
 {
-	// For now just immediately call scheduler
-	// Yielding has little use in preemptive RTOS as highest priority task is already running
-	// However useful if you have roud-robin tasks and want to immediately call the next one
+	/* For now just immediately call scheduler. Yielding has little use in
+	 * preemptive RTOS as highest priority task is already running. However
+	 * useful if you have roud-robin tasks and want to immediately call the
+	 * next one. */
 	os_schedule();
-}
-
-void os_task_change_priority(struct os_tcb *task, uint8_t new_priority)
-{
-	/*if (task->state == TASK_READY) {
-		os_task_remove_from_list(task, &ready_list[task->priority]);
-		os_task_insert_into_list(task,  &ready_list[new_priority]);
-	}*/
-	assert(task->state != TASK_READY);
-	task->priority = new_priority;
 }
 
 const struct os_tcb *os_task_query(uint8_t task_id)
@@ -262,30 +285,13 @@ bool os_mutex_acquire(struct os_mutex *mutex, uint16_t timeout_ticks)
 		os_mutex_assign(mutex, running_task);
 		return true;
 	} else {
-		// Priority inheritance: Set holding task to running task's priority
-		os_task_change_priority(mutex->holding_task, running_task->priority);
-		running_task->waiting = true;
-		
-		os_task_insert_into_list(running_task, &mutex->blocked_list);
-		os_task_sleep(timeout_ticks);
-		os_task_remove_from_list(running_task, &mutex->blocked_list);
-
-		// Task either gets here via timeout or woken by mutex release
-		// Commented out until context switch implemented
-		/*if (!running_task->waiting) {
-			os_mutex_assign(mutex, running_task);
-			return true;
-		}*/
-
-		// Notifies caller that acquire timed out
-		return false;
+		os_mutex_handle_block(mutex, timeout_ticks);
 	}
 }
 
 void os_mutex_release(struct os_mutex *mutex)
 {
-	// Set holding task back to original priority
-	os_task_change_priority(mutex->holding_task, mutex->holding_task_orig_pri);
+	mutex->holding_task->priority = mutex->holding_task_orig_pri;
 	mutex->holding_task = NULL;
 
 	struct os_tcb *high_pri_task = os_mutex_get_high_pri_task(mutex);

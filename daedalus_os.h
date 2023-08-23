@@ -58,7 +58,9 @@ struct os_mutex {
 void os_init(void);
 void os_start(void);
 
-uint8_t os_task_create(os_task_entry entry, void *arg, os_task_stack *stack_base, size_t stack_sz, uint8_t priority);
+uint8_t os_task_create(os_task_entry entry, void *arg,
+			os_task_stack *stack_base, size_t stack_sz,
+			uint8_t priority);
 void os_task_sleep(uint16_t ticks);
 void os_task_yield(void);
 const struct os_tcb *os_task_query(uint8_t task_id);
