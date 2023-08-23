@@ -28,30 +28,30 @@ typedef uint32_t os_task_stack;
 
 /* Enums */
 enum OS_TASK_STATE {
-    TASK_BLOCKED,
-    TASK_READY
+	TASK_BLOCKED,
+	TASK_READY
 };
 
 /* Structs */
 // Consider rearranging members for efficient struct packing
 struct os_tcb {
-    os_task_entry entry;
-    void *arg;
-    os_task_stack *stack_base;
-    size_t stack_sz;
-    uint8_t priority;
-    enum OS_TASK_STATE state;
-    struct os_tcb *next_task;
-    struct os_tcb *prev_task;
-    uint16_t timeout;
-    bool waiting;
-    uint8_t id;
+	os_task_entry entry;
+	void *arg;
+	os_task_stack *stack_base;
+	size_t stack_sz;
+	uint8_t priority;
+	enum OS_TASK_STATE state;
+	struct os_tcb *next_task;
+	struct os_tcb *prev_task;
+	uint16_t timeout;
+	bool waiting;
+	uint8_t id;
 };
 
 struct os_mutex {
-    struct os_tcb *holding_task;
-    uint16_t holding_task_orig_pri;
-    struct os_tcb *blocked_list;
+	struct os_tcb *holding_task;
+	uint16_t holding_task_orig_pri;
+	struct os_tcb *blocked_list;
 };
 
 /* Public Functions */
