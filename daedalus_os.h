@@ -50,7 +50,12 @@ struct os_tcb {
 
 struct os_mutex {
 	struct os_tcb *holding_task;
-	uint16_t holding_task_orig_pri;
+	uint8_t holding_task_orig_pri;
+	struct os_tcb *blocked_list;
+};
+
+struct os_semph {
+	uint8_t count;
 	struct os_tcb *blocked_list;
 };
 
@@ -68,5 +73,9 @@ const struct os_tcb *os_task_query(uint8_t task_id);
 void os_mutex_create(struct os_mutex *mutex);
 bool os_mutex_acquire(struct os_mutex *mutex, uint16_t timeout_ticks);
 void os_mutex_release(struct os_mutex *mutex);
+
+void os_semph_create(struct os_semph *semph, uint8_t count);
+bool os_semph_take(struct os_semph *semph, uint16_t timeout_ticks);
+void os_semph_give(struct os_semph *semph);
 
 #endif

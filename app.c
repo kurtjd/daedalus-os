@@ -5,6 +5,7 @@
 #define TASK_STACK_SZ 0xF
 
 struct os_mutex mutex;
+struct os_semph semph;
 
 void print_task(void *str)
 {
@@ -28,17 +29,30 @@ void mutex_task(void *str)
 	}
 }
 
+void semph_task(void *str)
+{
+	if (os_semph_take(&semph, OS_SEC_TO_TICKS(5))) {
+		printf("%s got the semaphore!\n", (const char *)str);
+		os_task_sleep(OS_SEC_TO_TICKS(20));
+		//os_semph_give(&mutex); // cos no context switching yet...
+	} else {
+		printf("%s blocked getting semaphore!\n", (const char *)str);
+	}
+}
+
 int main(void)
 {
 	// Tasks just share stack for now until implement context switching
 	os_task_stack task_stack[TASK_STACK_SZ];
 	os_mutex_create(&mutex);
+	os_semph_create(&semph, 3);
 
 	os_init();
 	os_task_create(print_task, "I just print", task_stack,
 			TASK_STACK_SZ, 1);
-	os_task_create(mutex_task, "Mutex A", task_stack, TASK_STACK_SZ, 2);
-	os_task_create(mutex_task, "Mutex B", task_stack, TASK_STACK_SZ, 2);
+	os_task_create(semph_task, "Semph A", task_stack, TASK_STACK_SZ, 2);
+	os_task_create(semph_task, "Semph B", task_stack, TASK_STACK_SZ, 2);
+	os_task_create(semph_task, "Semph C", task_stack, TASK_STACK_SZ, 2);
 
 	os_start();
 

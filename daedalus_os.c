@@ -25,44 +25,13 @@ static void os_idle_task_entry(void *data)
 	printf("Idling\n");
 }
 
-static void os_task_insert_into_list(struct os_tcb *task, struct os_tcb **list)
+static void os_sw_context(struct os_tcb *next_task)
 {
-	if (!*list) {
-		*list = task;
-	} else {
-		(*list)->prev_task = task;
-		task->next_task = *list;
-		*list = task;
-	}
-}
+	(void)next_task;
 
-static void os_task_remove_from_list(struct os_tcb *task, struct os_tcb **list)
-{
-	if (task->next_task)
-		task->next_task->prev_task = task->prev_task;
+	// ASM store context of current task
 
-	if (task->prev_task)
-		task->prev_task->next_task = task->next_task;
-	else
-		*list = task->next_task;
-	
-	task->next_task = NULL;
-	task->prev_task = NULL;
-}
-
-static void os_task_set_state(struct os_tcb *task, enum OS_TASK_STATE state)
-{
-	task->state = state;
-
-	switch (state) {
-	case TASK_READY:
-		os_task_insert_into_list(task, &ready_list[task->priority]);
-		break;
-	case TASK_BLOCKED:
-		running_task = NULL; // Consider if need to do this
-		os_task_remove_from_list(task, &ready_list[task->priority]);
-		break;
-	}
+	// ASM restore context of next task
 }
 
 static uint8_t os_get_highest_ready_pri(void)
@@ -90,15 +59,6 @@ static struct os_tcb *os_get_next_ready_task(uint8_t priority)
 		return NULL;
 }
 
-static void os_sw_context(struct os_tcb *next_task)
-{
-	(void)next_task;
-
-	// ASM store context of current task
-
-	// ASM restore context of next task
-}
-
 static void os_schedule(void)
 {
 	OS_ENTER_CRITICAL();
@@ -118,6 +78,93 @@ static void os_schedule(void)
 	running_task->entry(running_task->arg);
 }
 
+static void os_list_insert_task(struct os_tcb *task, struct os_tcb **list)
+{
+	if (!*list) {
+		*list = task;
+	} else {
+		(*list)->prev_task = task;
+		task->next_task = *list;
+		*list = task;
+	}
+}
+
+static void os_list_remove_task(struct os_tcb *task, struct os_tcb **list)
+{
+	if (task->next_task)
+		task->next_task->prev_task = task->prev_task;
+
+	if (task->prev_task)
+		task->prev_task->next_task = task->next_task;
+	else
+		*list = task->next_task;
+	
+	task->next_task = NULL;
+	task->prev_task = NULL;
+}
+
+static struct os_tcb *os_list_get_high_pri(const struct os_tcb *list)
+{
+	const struct os_tcb *task = list;
+	if (!task)
+		return NULL;
+
+	const struct os_tcb *high_task = task;
+	while (task) {
+		if (task->priority > high_task->priority) {
+			high_task = task;
+			task = task->next_task;
+		}
+	}
+
+	return (struct os_tcb *)high_task;
+}
+
+static void os_task_set_state(struct os_tcb *task, enum OS_TASK_STATE state)
+{
+	task->state = state;
+
+	switch (state) {
+	case TASK_READY:
+		os_list_insert_task(task, &ready_list[task->priority]);
+		break;
+	case TASK_BLOCKED:
+		running_task = NULL; // Consider if need to do this
+		os_list_remove_task(task, &ready_list[task->priority]);
+		break;
+	}
+}
+
+static bool os_task_wait_event(uint16_t timeout_ticks,
+				struct os_tcb *blocked_list)
+{
+	running_task->waiting = true;
+
+	os_list_insert_task(running_task, &blocked_list);
+	os_task_sleep(timeout_ticks);
+	os_list_remove_task(running_task, &blocked_list);
+
+	return running_task->waiting;
+}
+
+static void os_task_wake(struct os_tcb *task)
+{
+	OS_ENTER_CRITICAL();
+	task->waiting = false;
+	task->timeout = 0;
+	os_task_set_state(task, TASK_READY);
+	OS_EXIT_CRITICAL();
+
+	os_schedule();
+}
+
+static void os_list_wake_high_pri(const struct os_tcb *list)
+{
+	struct os_tcb *next_task = os_list_get_high_pri(list);
+	if (next_task)
+		os_task_wake(next_task);
+}
+
 static void os_mutex_assign(struct os_mutex *mutex, struct os_tcb *task)
 {
 	mutex->holding_task = task;
@@ -129,38 +176,28 @@ static bool os_mutex_handle_block(struct os_mutex *mutex,
 {
 	// Priority inheritance: Set holding task to running task's priority
 	mutex->holding_task->priority = running_task->priority;
-	running_task->waiting = true;
-	
-	os_task_insert_into_list(running_task, &mutex->blocked_list);
-	os_task_sleep(timeout_ticks);
-	os_task_remove_from_list(running_task, &mutex->blocked_list);
 
-	// Task either gets here via timeout or woken by mutex release
-	// Commented out until context switch implemented
-	/*if (!running_task->waiting) {
-		os_mutex_assign(mutex, running_task);
-		return true;
-	}*/
+	if (!os_task_wait_event(timeout_ticks, mutex->blocked_list)) {
+		// Commented out until have context switching
+		/*os_mutex_assign(mutex, running_task);
+		return true;*/
+	}
 
 	// Notifies caller that acquire timed out
 	return false;
 }
 
-static struct os_tcb *os_mutex_get_high_pri_task(const struct os_mutex *mutex)
+static bool os_semph_handle_block(struct os_semph *semph,
+					uint16_t timeout_ticks)
 {
-	struct os_tcb *task = mutex->blocked_list;
-	if (!task)
-		return NULL;
-
-	struct os_tcb *high_task = task;
-	while (task) {
-		if (task->priority > high_task->priority) {
-			high_task = task;
-			task = task->next_task;
-		}
+	if (!os_task_wait_event(timeout_ticks, semph->blocked_list)) {
+		// Commented out until have context switching
+		/*semph->count--;
+		return true;*/
 	}
 
-	return high_task;
+	// Notifies caller that acquire timed out
+	return false;
 }
 
 static void os_tick(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime)
@@ -248,17 +285,6 @@ void os_task_sleep(uint16_t ticks)
 	os_schedule();
 }
 
-static void os_task_wake(struct os_tcb *task)
-{
-	OS_ENTER_CRITICAL();
-	task->waiting = false;
-	task->timeout = 0;
-	os_task_set_state(task, TASK_READY);
-	OS_EXIT_CRITICAL();
-
-	os_schedule();
-}
-
 void os_task_yield(void)
 {
 	/* For now just immediately call scheduler. Yielding has little use in
@@ -293,8 +319,27 @@ void os_mutex_release(struct os_mutex *mutex)
 {
 	mutex->holding_task->priority = mutex->holding_task_orig_pri;
 	mutex->holding_task = NULL;
+	os_list_wake_high_pri(mutex->blocked_list);
+}
 
-	struct os_tcb *high_pri_task = os_mutex_get_high_pri_task(mutex);
-	if (high_pri_task)
-		os_task_wake(high_pri_task);
+void os_semph_create(struct os_semph *semph, uint8_t count)
+{
+	semph->count = count;
+	semph->blocked_list = NULL;
+}
+
+bool os_semph_take(struct os_semph *semph, uint16_t timeout_ticks)
+{
+	if (semph->count > 0) {
+		semph->count--;
+		return true;
+	} else {
+		return os_semph_handle_block(semph, timeout_ticks);
+	}
+}
+
+void os_semph_give(struct os_semph *semph)
+{
+	semph->count++;
+	os_list_wake_high_pri(semph->blocked_list);
 }
