@@ -6,6 +6,7 @@
 
 struct os_mutex mutex;
 struct os_semph semph;
+struct os_queue queue;
 
 void print_task(void *str)
 {
@@ -44,8 +45,12 @@ int main(void)
 {
 	// Tasks just share stack for now until implement context switching
 	os_task_stack task_stack[TASK_STACK_SZ];
+
 	os_mutex_create(&mutex);
 	os_semph_create(&semph, 3);
+
+	uint8_t queue_buf[OS_QUEUE_SZ(5, sizeof(int))];
+	os_queue_create(&queue, 5, queue_buf, sizeof(int));
 
 	os_init();
 	os_task_create(print_task, "I just print", task_stack,

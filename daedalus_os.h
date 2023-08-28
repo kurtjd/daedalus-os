@@ -25,6 +25,7 @@ typedef uint32_t os_task_stack;
 #define OS_ENTER_CRITICAL() asm("nop")
 #define OS_EXIT_CRITICAL() asm("nop")
 #define OS_SEC_TO_TICKS(sec) ((sec) * CLOCK_RATE_HZ)
+#define OS_QUEUE_SZ(length, item_sz) ((length) * (item_sz))
 
 /* Enums */
 enum OS_TASK_STATE {
@@ -59,6 +60,17 @@ struct os_semph {
 	struct os_tcb *blocked_list;
 };
 
+struct os_queue {
+	size_t size;
+	size_t head;
+	size_t tail;
+	size_t item_sz;
+	uint8_t *storage;
+	bool full;
+	struct os_tcb *rec_blocked_list;
+	struct os_tcb *ins_blocked_list;
+};
+
 /* Public Functions */
 void os_init(void);
 void os_start(void);
@@ -77,5 +89,9 @@ void os_mutex_release(struct os_mutex *mutex);
 void os_semph_create(struct os_semph *semph, uint8_t count);
 bool os_semph_take(struct os_semph *semph, uint16_t timeout_ticks);
 void os_semph_give(struct os_semph *semph);
+
+void os_queue_create(struct os_queue *queue, size_t length, uint8_t *storage, size_t item_sz);
+bool os_queue_insert(struct os_queue *queue, void *item, uint16_t timeout_ticks);
+bool os_queue_retrieve(struct os_queue *queue, void *item, uint16_t timeout_ticks);
 
 #endif

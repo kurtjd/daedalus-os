@@ -135,7 +135,7 @@ static void os_task_set_state(struct os_tcb *task, enum OS_TASK_STATE state)
 	}
 }
 
-static bool os_task_wait_event(uint16_t timeout_ticks,
+static bool os_task_wait(uint16_t timeout_ticks,
 				struct os_tcb *blocked_list)
 {
 	running_task->waiting = true;
@@ -144,7 +144,9 @@ static bool os_task_wait_event(uint16_t timeout_ticks,
 	os_task_sleep(timeout_ticks);
 	os_list_remove_task(running_task, &blocked_list);
 
-	return running_task->waiting;
+	bool waiting = running_task->waiting;
+	running_task->waiting = false;
+	return waiting;
 }
 
 static void os_task_wake(struct os_tcb *task)
@@ -163,41 +165,6 @@ static void os_list_wake_high_pri(const struct os_tcb *list)
 	struct os_tcb *next_task = os_list_get_high_pri(list);
 	if (next_task)
 		os_task_wake(next_task);
-}
-
-static void os_mutex_assign(struct os_mutex *mutex, struct os_tcb *task)
-{
-	mutex->holding_task = task;
-	mutex->holding_task_orig_pri = task->priority;
-}
-
-static bool os_mutex_handle_block(struct os_mutex *mutex,
-					uint16_t timeout_ticks)
-{
-	// Priority inheritance: Set holding task to running task's priority
-	mutex->holding_task->priority = running_task->priority;
-
-	if (!os_task_wait_event(timeout_ticks, mutex->blocked_list)) {
-		// Commented out until have context switching
-		/*os_mutex_assign(mutex, running_task);
-		return true;*/
-	}
-
-	// Notifies caller that acquire timed out
-	return false;
-}
-
-static bool os_semph_handle_block(struct os_semph *semph,
-					uint16_t timeout_ticks)
-{
-	if (!os_task_wait_event(timeout_ticks, semph->blocked_list)) {
-		// Commented out until have context switching
-		/*semph->count--;
-		return true;*/
-	}
-
-	// Notifies caller that acquire timed out
-	return false;
 }
 
 static void os_tick(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime)
@@ -307,12 +274,17 @@ void os_mutex_create(struct os_mutex *mutex)
 
 bool os_mutex_acquire(struct os_mutex *mutex, uint16_t timeout_ticks)
 {
-	if (!mutex->holding_task) {
-		os_mutex_assign(mutex, running_task);
-		return true;
-	} else {
-		return os_mutex_handle_block(mutex, timeout_ticks);
+	if (mutex->holding_task) {
+		// Priority inheritance
+		mutex->holding_task->priority = running_task->priority;
+
+		if (os_task_wait(timeout_ticks, mutex->blocked_list))
+			return false;
 	}
+	
+	mutex->holding_task = running_task;
+	mutex->holding_task_orig_pri = running_task->priority;
+	return true;
 }
 
 void os_mutex_release(struct os_mutex *mutex)
@@ -330,16 +302,56 @@ void os_semph_create(struct os_semph *semph, uint8_t count)
 
 bool os_semph_take(struct os_semph *semph, uint16_t timeout_ticks)
 {
-	if (semph->count > 0) {
-		semph->count--;
-		return true;
-	} else {
-		return os_semph_handle_block(semph, timeout_ticks);
-	}
+	if (semph->count <= 0 && os_task_wait(timeout_ticks, semph->blocked_list))
+		return false;
+	
+	semph->count--;
+	return true;
 }
 
 void os_semph_give(struct os_semph *semph)
 {
 	semph->count++;
 	os_list_wake_high_pri(semph->blocked_list);
+}
+
+void os_queue_create(struct os_queue *queue, size_t length, uint8_t *storage, size_t item_sz)
+{
+	queue->size = length * item_sz;
+	queue->item_sz = item_sz;
+	queue->storage = storage;
+	queue->head = 0;
+	queue->tail = 0;
+	queue->full = false;
+	queue->rec_blocked_list = NULL;
+	queue->ins_blocked_list = NULL;
+}
+
+bool os_queue_insert(struct os_queue *queue, void *item, uint16_t timeout_ticks)
+{
+	if (queue->full && os_task_wait(timeout_ticks, queue->ins_blocked_list))
+		return false;
+	
+	memcpy(queue->storage + queue->head, item, queue->item_sz);
+	queue->head = (queue->head + queue->item_sz) % queue->size;
+
+	if (queue->head == queue->tail)
+		queue->full = true;
+	
+	os_list_wake_high_pri(queue->rec_blocked_list);
+	return true;
+}
+
+bool os_queue_retrieve(struct os_queue *queue, void *item, uint16_t timeout_ticks)
+{
+	bool queue_empty = !queue->full && queue->head == queue->tail;
+	if (queue_empty && os_task_wait(timeout_ticks, queue->rec_blocked_list))
+		return false;
+	
+	memcpy(item, queue->storage + queue->tail, queue->item_sz);
+	queue->tail = (queue->tail + queue->item_sz) % queue->size;
+	queue->full = false;
+
+	os_list_wake_high_pri(queue->ins_blocked_list);
+	return true;
 }
