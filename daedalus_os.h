@@ -46,6 +46,7 @@ struct os_tcb {
 	struct os_tcb *prev_task;
 	uint16_t timeout;
 	bool waiting;
+	uint8_t wait_flags;
 	uint8_t id;
 };
 
@@ -71,6 +72,11 @@ struct os_queue {
 	struct os_tcb *ins_blocked_list;
 };
 
+struct os_event {
+	uint8_t flags;
+	struct os_tcb *blocked_list;
+};
+
 /* Public Functions */
 void os_init(void);
 void os_start(void);
@@ -91,7 +97,11 @@ bool os_semph_take(struct os_semph *semph, uint16_t timeout_ticks);
 void os_semph_give(struct os_semph *semph);
 
 void os_queue_create(struct os_queue *queue, size_t length, uint8_t *storage, size_t item_sz);
-bool os_queue_insert(struct os_queue *queue, void *item, uint16_t timeout_ticks);
+bool os_queue_insert(struct os_queue *queue, const void *item, uint16_t timeout_ticks);
 bool os_queue_retrieve(struct os_queue *queue, void *item, uint16_t timeout_ticks);
+
+void os_event_create(struct os_event *event);
+void os_event_set(struct os_event *event, uint8_t flags);
+bool os_event_wait(struct os_event *event, uint8_t flags, uint16_t timeout_ticks);
 
 #endif
