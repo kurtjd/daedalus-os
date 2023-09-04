@@ -126,6 +126,7 @@ bool os_event_wait(struct os_event *event, uint8_t flags, uint16_t timeout_ticks
 void os_sim_thread_sleep(struct os_tcb *task);
 void os_sim_thread_wake(struct os_tcb *task);
 void os_sim_thread_sched_check(void);
+void os_sim_main_wait(void);
 #endif
 
 #endif

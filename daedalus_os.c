@@ -32,7 +32,7 @@ static void os_idle_task_entry(void *data)
 	while (1) {
 		os_sim_thread_sched_check();
 		ticks_in_idle++;
-		printf("Idling\n");
+		//printf("Idling\n");
 	}
 
 	return NULL;
@@ -119,13 +119,15 @@ static void os_list_insert_task(struct os_tcb *task, struct os_tcb **list)
 
 static void os_list_remove_task(struct os_tcb *task, struct os_tcb **list)
 {
-	if (task->next_task)
+	if (task->next_task) {
 		task->next_task->prev_task = task->prev_task;
+	}
 
-	if (task->prev_task)
+	if (task->prev_task) {
 		task->prev_task->next_task = task->next_task;
-	else
+	} else {
 		*list = task->next_task;
+	}
 	
 	task->next_task = NULL;
 	task->prev_task = NULL;
@@ -141,8 +143,9 @@ static struct os_tcb *os_list_get_high_pri(const struct os_tcb *list)
 	while (task) {
 		if (task->priority > high_task->priority) {
 			high_task = task;
-			task = task->next_task;
 		}
+
+		task = task->next_task;
 	}
 
 	return (struct os_tcb *)high_task;
@@ -161,32 +164,35 @@ static void os_task_set_state(struct os_tcb *task, enum OS_TASK_STATE state)
 	}
 }
 
-static bool os_task_wait(uint16_t timeout_ticks, struct os_tcb *blocked_list)
+static bool os_task_wait(uint16_t timeout_ticks, struct os_tcb **blocked_list)
 {
 	running_task->waiting = true;
 
 	os_list_remove_task(running_task, &ready_list[running_task->priority]);
-	os_list_insert_task(running_task, &blocked_list);
+	os_list_insert_task(running_task, blocked_list);
+
 	os_task_sleep(timeout_ticks);
 
+	// But if task timed out we never removed from block list... fix that
 	bool waiting = running_task->waiting;
 	running_task->waiting = false;
 	return waiting;
 }
 
-static void os_task_wake(struct os_tcb *task, struct os_tcb *list)
+static void os_task_wake(struct os_tcb *task, struct os_tcb **list)
 {
 	OS_ENTER_CRITICAL();
 	task->waiting = false;
 	task->timeout = 0;
-	os_list_remove_task(task, &list);
+	os_list_remove_task(task, list);
 	os_task_set_state(task, TASK_READY);
 	OS_EXIT_CRITICAL();
 }
 
-static void os_list_wake_high_pri(struct os_tcb *list)
+static void os_list_wake_high_pri(struct os_tcb **list)
 {
-	struct os_tcb *next_task = os_list_get_high_pri(list);
+	// In task_wake we remove from blocked list and add to ready list
+	struct os_tcb *next_task = os_list_get_high_pri(*list);
 	if (next_task) {
 		os_task_wake(next_task, list);
 		os_schedule();
@@ -347,7 +353,7 @@ bool os_mutex_acquire(struct os_mutex *mutex, uint16_t timeout_ticks)
 			os_list_insert_task(mutex->holding_task, &ready_list[mutex->holding_task->priority]);
 		}
 
-		if (os_task_wait(timeout_ticks, mutex->blocked_list))
+		if (os_task_wait(timeout_ticks, &mutex->blocked_list))
 			return false;
 	}
 	
@@ -360,7 +366,7 @@ void os_mutex_release(struct os_mutex *mutex)
 {
 	mutex->holding_task->priority = mutex->holding_task_orig_pri;
 	mutex->holding_task = NULL;
-	os_list_wake_high_pri(mutex->blocked_list);
+	os_list_wake_high_pri(&mutex->blocked_list);
 }
 
 void os_semph_create(struct os_semph *semph, uint8_t count)
@@ -371,7 +377,7 @@ void os_semph_create(struct os_semph *semph, uint8_t count)
 
 bool os_semph_take(struct os_semph *semph, uint16_t timeout_ticks)
 {
-	if (semph->count <= 0 && os_task_wait(timeout_ticks, semph->blocked_list))
+	if (semph->count <= 0 && os_task_wait(timeout_ticks, &semph->blocked_list))
 		return false;
 	
 	semph->count--;
@@ -381,7 +387,7 @@ bool os_semph_take(struct os_semph *semph, uint16_t timeout_ticks)
 void os_semph_give(struct os_semph *semph)
 {
 	semph->count++;
-	os_list_wake_high_pri(semph->blocked_list);
+	os_list_wake_high_pri(&semph->blocked_list);
 }
 
 void os_queue_create(struct os_queue *queue, size_t length, uint8_t *storage, size_t item_sz)
@@ -398,30 +404,31 @@ void os_queue_create(struct os_queue *queue, size_t length, uint8_t *storage, si
 
 bool os_queue_insert(struct os_queue *queue, const void *item, uint16_t timeout_ticks)
 {
-	if (queue->full && os_task_wait(timeout_ticks, queue->ins_blocked_list))
+	if (queue->full && os_task_wait(timeout_ticks, &queue->ins_blocked_list)) {
 		return false;
-	
+	}
+
 	memcpy(queue->storage + queue->head, item, queue->item_sz);
 	queue->head = (queue->head + queue->item_sz) % queue->size;
 
 	if (queue->head == queue->tail)
 		queue->full = true;
-	
-	os_list_wake_high_pri(queue->rec_blocked_list);
+
+	os_list_wake_high_pri(&queue->rec_blocked_list);
 	return true;
 }
 
 bool os_queue_retrieve(struct os_queue *queue, void *item, uint16_t timeout_ticks)
 {
 	bool queue_empty = !queue->full && queue->head == queue->tail;
-	if (queue_empty && os_task_wait(timeout_ticks, queue->rec_blocked_list))
+	if (queue_empty && os_task_wait(timeout_ticks, &queue->rec_blocked_list))
 		return false;
 	
 	memcpy(item, queue->storage + queue->tail, queue->item_sz);
 	queue->tail = (queue->tail + queue->item_sz) % queue->size;
 	queue->full = false;
 
-	os_list_wake_high_pri(queue->ins_blocked_list);
+	os_list_wake_high_pri(&queue->ins_blocked_list);
 	return true;
 }
 
@@ -442,7 +449,7 @@ void os_event_set(struct os_event *event, uint8_t flags)
 		struct os_tcb *next = task->next_task;
 
 		if (task->wait_flags == flags) {
-			os_task_wake(task, event->blocked_list);
+			os_task_wake(task, &event->blocked_list);
 			task_woken = true;
 		}
 		
@@ -459,7 +466,7 @@ bool os_event_wait(struct os_event *event, uint8_t flags, uint16_t timeout_ticks
 	if ((event->flags & flags) != flags) {
 		running_task->wait_flags = flags;
 
-		if (os_task_wait(timeout_ticks, event->blocked_list))
+		if (os_task_wait(timeout_ticks, &event->blocked_list))
 			return false;
 	}
 	
@@ -497,5 +504,11 @@ void os_sim_thread_sched_check(void)
 	} else {
 		pthread_mutex_unlock(&sim_sched_mtx);
 	}
+}
+
+void os_sim_main_wait(void)
+{
+	while (1)
+		sleep(1000);
 }
 #endif

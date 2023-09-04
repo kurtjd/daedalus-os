@@ -22,15 +22,14 @@ void *task1(void *data)
 {
 	while (1) {
 		os_sim_thread_sched_check();
-		int hax = 69;
 
+		int hax = 69;
 		if (os_queue_insert(&lol_q, &hax, OS_SEC_TO_TICKS(1))) {
 			os_printf("I inserted in Q OwO\n");
 		} else {
 			os_printf("Failed insert 8==D T^T\n");
 			exit(0);
 		}
-		
 	}
 
 	return NULL;
@@ -42,7 +41,6 @@ void *task2(void *data)
 		os_sim_thread_sched_check();
 
 		int hax;
-		os_printf("ok\n");
 		if (os_queue_retrieve(&lol_q, &hax, OS_SEC_TO_TICKS(1))) {
 			os_printf("I got: %d\n", hax);
 		} else {
@@ -67,5 +65,5 @@ int main(void)
 	os_task_create(task2, "Task B", task_stack, TASK_STACK_SZ, 1);
 	os_start();
 
-	pthread_exit(NULL);
+	os_sim_main_wait();
 }
