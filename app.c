@@ -1,81 +1,71 @@
 /* Test app for daedalus-os */
 #include <stdio.h>
+#include <stdarg.h>
 #include "daedalus_os.h"
 
 #define TASK_STACK_SZ 0xF
 
-struct os_mutex mutex;
-struct os_semph semph;
-struct os_queue queue;
-struct os_event event;
+static struct os_mutex stdout_mtx;
+static struct os_queue lol_q;
 
-void print_task(void *str)
-{
-	printf("%s\n", (const char *)str);
+void os_printf(const char *format, ...) {
+	va_list args;
+	va_start(args, format);
+	if (os_mutex_acquire(&stdout_mtx, OS_SEC_TO_TICKS(100))) {
+		vprintf(format, args);
+		os_mutex_release(&stdout_mtx);
+	}
+	va_end(args);
 }
 
-void sleep_task(void *str)
+void *task1(void *data)
 {
-	printf("%s\n", (const char *)str);
-	os_task_sleep(OS_SEC_TO_TICKS(5));
+	while (1) {
+		os_sim_thread_sched_check();
+		int hax = 69;
+
+		if (os_queue_insert(&lol_q, &hax, OS_SEC_TO_TICKS(1))) {
+			os_printf("I inserted in Q OwO\n");
+		} else {
+			os_printf("Failed insert 8==D T^T\n");
+			exit(0);
+		}
+		
+	}
+
+	return NULL;
 }
 
-void mutex_task(void *str)
+void *task2(void *data)
 {
-	if (os_mutex_acquire(&mutex, OS_SEC_TO_TICKS(5))) {
-		printf("%s got the mutex!\n", (const char *)str);
-		os_task_sleep(OS_SEC_TO_TICKS(20));
-		//os_mutex_release(&mutex); // cos no context switching yet...
-	} else {
-		printf("%s blocked getting mutex!\n", (const char *)str);
+	while (1) {
+		os_sim_thread_sched_check();
+
+		int hax;
+		os_printf("ok\n");
+		if (os_queue_retrieve(&lol_q, &hax, OS_SEC_TO_TICKS(1))) {
+			os_printf("I got: %d\n", hax);
+		} else {
+			os_printf("FUK\n");
+			exit(0);
+		}
 	}
 }
 
-void semph_task(void *str)
-{
-	if (os_semph_take(&semph, OS_SEC_TO_TICKS(5))) {
-		printf("%s got the semaphore!\n", (const char *)str);
-		os_task_sleep(OS_SEC_TO_TICKS(20));
-		//os_semph_give(&mutex); // cos no context switching yet...
-	} else {
-		printf("%s blocked getting semaphore!\n", (const char *)str);
-	}
-}
-
-void event_set_task(void *str)
-{
-	os_event_set(&event, 5);
-	printf("Flags set!\n");
-	os_task_sleep(OS_SEC_TO_TICKS(20));
-}
-
-void event_wait_task(void *str)
-{
-	if (os_event_wait(&event, 5, OS_SEC_TO_TICKS(10)))
-		printf("Flags received!\n");
-	else
-		printf("Waiting on flags...\n");
-}
-
+// Figure out queues...
 int main(void)
 {
 	// Tasks just share stack for now until implement context switching
 	os_task_stack task_stack[TASK_STACK_SZ];
+	os_mutex_create(&stdout_mtx);
 
-	os_mutex_create(&mutex);
-	os_semph_create(&semph, 3);
-	os_event_create(&event);
-
-	uint8_t queue_buf[OS_QUEUE_SZ(5, sizeof(int))];
-	os_queue_create(&queue, 5, queue_buf, sizeof(int));
+	uint8_t q_buf[OS_QUEUE_SZ(5, sizeof(int))];
+	os_queue_create(&lol_q, 5, q_buf, sizeof(int));
 
 	os_init();
-	os_task_create(print_task, "I just print", task_stack,
-			TASK_STACK_SZ, 2);
-	os_task_create(event_set_task, NULL, task_stack, TASK_STACK_SZ, 2);
-	//os_task_create(event_wait_task, NULL, task_stack, TASK_STACK_SZ, 2);
-
+	os_task_create(task1, "Task A", task_stack, TASK_STACK_SZ, 2);
+	os_task_create(task2, "Task B", task_stack, TASK_STACK_SZ, 1);
 	os_start();
 
-	return 0;
+	pthread_exit(NULL);
 }
