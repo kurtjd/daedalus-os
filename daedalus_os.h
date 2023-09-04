@@ -15,14 +15,6 @@
 #define MAX_PRIORITY_LEVEL 31
 #define CLOCK_RATE_HZ 100
 
-/* Max Supported Values (should NOT be modified by user) */
-#define MAX_SUPPORTED_PRIORITY_LEVEL 255
-#define MAX_SUPPORTED_NUM_TASKS 255
-
-/* Other DEFINES */
-#define PRIORITY_GROUP_WIDTH 16
-#define PRIORITY_TABLE_SZ (MAX_PRIORITY_LEVEL / PRIORITY_GROUP_WIDTH + 1)
-
 /* Typedefs */
 #ifdef USE_SIM
 typedef void* (*os_task_entry)(void *);
@@ -45,6 +37,11 @@ enum OS_TASK_STATE {
 	TASK_READY
 };
 
+enum OS_STATUS {
+	OS_SUCCESS,
+	OS_TIMEOUT
+};
+
 /* Structs */
 // Consider rearranging members for efficient struct packing
 struct os_tcb {
@@ -65,7 +62,6 @@ struct os_tcb {
 	pthread_cond_t sim_cond;
 	bool sim_started;
 	#endif
-
 };
 
 struct os_mutex {
@@ -107,20 +103,20 @@ void os_task_yield(void);
 const struct os_tcb *os_task_query(uint8_t task_id);
 
 void os_mutex_create(struct os_mutex *mutex);
-bool os_mutex_acquire(struct os_mutex *mutex, uint16_t timeout_ticks);
+enum OS_STATUS os_mutex_acquire(struct os_mutex *mutex, uint16_t timeout_ticks);
 void os_mutex_release(struct os_mutex *mutex);
 
 void os_semph_create(struct os_semph *semph, uint8_t count);
-bool os_semph_take(struct os_semph *semph, uint16_t timeout_ticks);
+enum OS_STATUS os_semph_take(struct os_semph *semph, uint16_t timeout_ticks);
 void os_semph_give(struct os_semph *semph);
 
 void os_queue_create(struct os_queue *queue, size_t length, uint8_t *storage, size_t item_sz);
-bool os_queue_insert(struct os_queue *queue, const void *item, uint16_t timeout_ticks);
-bool os_queue_retrieve(struct os_queue *queue, void *item, uint16_t timeout_ticks);
+enum OS_STATUS os_queue_insert(struct os_queue *queue, const void *item, uint16_t timeout_ticks);
+enum OS_STATUS os_queue_retrieve(struct os_queue *queue, void *item, uint16_t timeout_ticks);
 
 void os_event_create(struct os_event *event);
 void os_event_set(struct os_event *event, uint8_t flags);
-bool os_event_wait(struct os_event *event, uint8_t flags, uint16_t timeout_ticks);
+enum OS_STATUS os_event_wait(struct os_event *event, uint8_t flags, uint16_t timeout_ticks);
 
 #ifdef USE_SIM
 void os_sim_thread_sleep(struct os_tcb *task);
