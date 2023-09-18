@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <stdio.h>
+#include <string.h>
 #include "daedalus_os.h"
 
 #define IDLE_TASK_STACK_SZ 16
@@ -174,7 +175,8 @@ static void os_sw_context(struct os_tcb *prev_task, struct os_tcb *next_task)
 		os_sim_thread_wake(next_task);
 	} else {
 		next_task->sim_started = true;
-		pthread_create(NULL, NULL, next_task->entry, next_task->arg);
+		pthread_t t;
+		pthread_create(&t, NULL, next_task->entry, next_task->arg);
 	}
 	os_sim_thread_sleep(prev_task);
 	#else
@@ -258,7 +260,8 @@ void os_start(void)
 	os_schedule();
 
 	#ifdef USE_SIM
-	pthread_create(NULL, NULL, os_tick, NULL);
+	pthread_t t;
+	pthread_create(&t, NULL, os_tick, NULL);
 	#else
 	// Enable SysTick interrupt
 	#endif
