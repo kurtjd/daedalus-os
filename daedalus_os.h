@@ -5,6 +5,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stddef.h>
 #ifdef USE_SIM
 #include <pthread.h>
 #include <unistd.h>
