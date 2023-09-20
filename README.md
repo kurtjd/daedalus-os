@@ -1,5 +1,5 @@
 # daedalus-os (In Development)
-daedalus-os is a simple RTOS I'm developing mainly for learning purposes. The goal is to support the core features one would expect from an RTOS (preemptive scheduling, mutexes, semaphores, queues, etc) without introducing too much extra functionality or optimization tricks, in order for other beginners to more easily understand how an RTOS works. I am planning to target Cortex-M MCUs, but currently testing is being performed via OS threads (to simulate context switching on a desktop).
+daedalus-os is a simple RTOS I'm developing mainly for learning purposes. The goal is to support the core features one would expect from an RTOS (preemptive scheduling, mutexes, semaphores, queues, etc) without introducing too much extra functionality or optimization tricks, in order for other beginners to more easily understand how an RTOS works. daedalus-os currently only targets ARM Cortex-M MCUs but perhaps in the future I'll work on supporting more.
 
 ## Planned Features (X is yet to be implemented)
 :heavy_check_mark: Preemptive scheduling  
@@ -11,16 +11,16 @@ daedalus-os is a simple RTOS I'm developing mainly for learning purposes. The go
 :heavy_check_mark: Event groups  
 :heavy_check_mark: Fully static memory allocation  
 :heavy_check_mark: Desktop simulator (uses OS threads to simulate context switching)  
+:heavy_check_mark: Context switching   
 :x: Task messages  
 :x: Low-power idle task  
-:x: Context switching   
 :x: ISR safe functions
 
 ## Build
-Simply run `make`. You may need to modify the make file to explicitly link pthreads if building with the USE_SIM flag.
+daedalus-os is meant to be built alongside a larger project. Simply include daedalus_os.c in your project's source folder and daedalus_os.h in your project's include folder.
 
 ## Run
-If built with the USE_SIM flag (which is on by default), this can be ran from your desktop machine. Simply run `daedalus`. You may experiment with app.c to test different OS functions.
+Please see app.c as an example of how to use daedalus-os in your project.
 
 ## License
 daedalus-os is licensed under the MIT license and is completely free to use and modify.
