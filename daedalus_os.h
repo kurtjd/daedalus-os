@@ -1,15 +1,9 @@
 #ifndef DAEDALUS_OS_H
 #define DAEDALUS_OS_H
 
-#define USE_SIM
-
 #include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>
-#ifdef USE_SIM
-#include <pthread.h>
-#include <unistd.h>
-#endif
 
 /* Config (modified by user) */
 #define MAX_NUM_TASKS 32
@@ -17,17 +11,13 @@
 #define CLOCK_RATE_HZ 100
 
 /* Typedefs */
-#ifdef USE_SIM
-typedef void* (*os_task_entry)(void *);
-#else
 typedef void (*os_task_entry)(void *);
-#endif
 
 typedef uint32_t os_task_stack;
 
 /* Macros */
-#define OS_ENTER_CRITICAL() asm("nop")
-#define OS_EXIT_CRITICAL() asm("nop")
+#define OS_ENTER_CRITICAL() asm("CPSID I")
+#define OS_EXIT_CRITICAL() asm("CPSIE I")
 #define OS_MSEC_TO_TICKS(msec) (((msec) * CLOCK_RATE_HZ) / 1000)
 #define OS_SEC_TO_TICKS(sec) (OS_MSEC_TO_TICKS((sec) * 1000))
 #define OS_QUEUE_SZ(length, item_sz) ((length) * (item_sz))
@@ -48,8 +38,7 @@ enum OS_STATUS {
 struct os_tcb {
 	os_task_entry entry;
 	void *arg;
-	os_task_stack *stack_base;
-	size_t stack_sz;
+	os_task_stack *stack_pntr;
 	uint8_t priority;
 	enum OS_TASK_STATE state;
 	struct os_tcb *next_task;
@@ -58,11 +47,6 @@ struct os_tcb {
 	bool waiting;
 	uint8_t wait_flags;
 	uint8_t id;
-
-	#ifdef USE_SIM
-	pthread_cond_t sim_cond;
-	bool sim_started;
-	#endif
 };
 
 struct os_mutex {
@@ -118,12 +102,5 @@ enum OS_STATUS os_queue_retrieve(struct os_queue *queue, void *item, uint16_t ti
 void os_event_create(struct os_event *event);
 void os_event_set(struct os_event *event, uint8_t flags);
 enum OS_STATUS os_event_wait(struct os_event *event, uint8_t flags, uint16_t timeout_ticks);
-
-#ifdef USE_SIM
-void os_sim_thread_sleep(struct os_tcb *task);
-void os_sim_thread_wake(struct os_tcb *task);
-void os_sim_thread_sched_check(void);
-void os_sim_main_wait(void);
-#endif
 
 #endif

@@ -3,12 +3,30 @@
 #include <string.h>
 #include "daedalus_os.h"
 
-#define IDLE_TASK_STACK_SZ 16
+// Port-specific (Cortex-M3)
+#define CPU_CLK_SPEED 72000000UL
+#define STK_BASE 0xE000E010
+#define STK_CTRL ((*(volatile uint32_t *)(STK_BASE + 0x00)))
+#define STK_LOAD ((*(volatile uint32_t *)(STK_BASE + 0x04)))
+#define STK_VAL ((*(volatile uint32_t *)(STK_BASE + 0x08)))
+#define STK_CTRL_CPU_CLK (1 << 2)
+#define STK_CTRL_EN_INT (1 << 1)
+#define STK_CTRL_ENABLE (1 << 0)
+#define SCB_ICSR ((*(volatile uint32_t *)(0xE000ED04)))
+#define PENDSV_SET (1 << 28)
+#define SW_CONTEXT() do { \
+    SCB_ICSR |= PENDSV_SET; \
+    asm("isb"); \
+} while (0)
+
+// Idle Task
+#define IDLE_TASK_STACK_SZ 0xFF
 
 // Task-related variables
 static struct os_tcb tasks[MAX_NUM_TASKS];
 static int task_count = 0;
 static struct os_tcb *running_task = NULL;
+static struct os_tcb *prev_task = NULL;
 static struct os_tcb *ready_list[MAX_PRIORITY_LEVEL];
 static uint8_t highest_priority = 0;
 
@@ -16,10 +34,6 @@ static uint8_t highest_priority = 0;
 static os_task_stack idle_os_task_stack[IDLE_TASK_STACK_SZ];
 static uint32_t ticks_in_idle = 0;
 
-#ifdef USE_SIM
-static pthread_mutex_t sim_sched_mtx = PTHREAD_MUTEX_INITIALIZER;
-static bool sim_sched = false;
-#endif
 
 
 
@@ -27,20 +41,12 @@ static bool sim_sched = false;
 /***************************************************************************************************
  * Private/Helper Functions
  **************************************************************************************************/
-#ifdef USE_SIM
-static void *os_idle_task_entry(void *data)
-#else
 static void os_idle_task_entry(void *data)
-#endif
 {
 	(void)data;
 	while (1) {
-		os_sim_thread_sched_check();
 		ticks_in_idle++;
-		//printf("Idling\n");
 	}
-
-	return NULL;
 }
 
 static void os_list_insert_task(struct os_tcb *task, struct os_tcb **list)
@@ -114,7 +120,7 @@ static enum OS_STATUS os_task_wait(uint16_t timeout_ticks, struct os_tcb **block
 
 	os_task_sleep(timeout_ticks);
 
-	// But if task timed out we never removed from block list... fix that
+	// TODO: But if task timed out we never removed from block list... fix that
 	bool waiting = running_task->waiting;
 	running_task->waiting = false;
 
@@ -123,66 +129,10 @@ static enum OS_STATUS os_task_wait(uint16_t timeout_ticks, struct os_tcb **block
 
 static void os_task_wake(struct os_tcb *task, struct os_tcb **list)
 {
-	OS_ENTER_CRITICAL();
 	task->waiting = false;
 	task->timeout = 0;
 	os_list_remove_task(task, list);
 	os_task_set_state(task, TASK_READY);
-	OS_EXIT_CRITICAL();
-}
-
-#ifdef USE_SIM
-static void *os_tick(void *data)
-#else
-static void os_tick(void)
-#endif
-{
-	while (1) {
-		/* Naive approach, optimize later (don't want to have to loop over
-		* every task, only tasks in a timeout list) */
-		for (int i = 0; i < task_count; i++) {
-			struct os_tcb *task = &tasks[i];
-
-			if (task->timeout > 0) {
-				task->timeout--;
-				if (task->timeout == 0)
-					os_task_set_state(task, TASK_READY);
-			}
-		}
-
-		#ifdef USE_SIM
-		/* TODO:
-		-Set tick thread priority higher
-		-Find way to make prev task sleep rather than signal thru sim_sched
-		*/
-		pthread_mutex_lock(&sim_sched_mtx);
-		sim_sched = true;
-		pthread_mutex_unlock(&sim_sched_mtx);
-		usleep((1000 / CLOCK_RATE_HZ) * 1000);
-		#endif
-	}
-
-	#ifdef USE_SIM
-	(void)data;
-	return NULL;
-	#endif
-}
-
-static void os_sw_context(struct os_tcb *prev_task, struct os_tcb *next_task)
-{
-	#ifdef USE_SIM
-	if (next_task->sim_started) {
-		os_sim_thread_wake(next_task);
-	} else {
-		next_task->sim_started = true;
-		pthread_t t;
-		pthread_create(&t, NULL, next_task->entry, next_task->arg);
-	}
-	os_sim_thread_sleep(prev_task);
-	#else
-	// ASM store context of prev task
-	// ASM restore context of next task
-	#endif
 }
 
 static uint8_t os_get_highest_ready_pri(void)
@@ -219,19 +169,34 @@ static struct os_tcb *os_get_next_ready_task(uint8_t priority)
 
 static void os_schedule(void)
 {
-	OS_ENTER_CRITICAL();
-
 	uint8_t highest_ready_pri = os_get_highest_ready_pri();
 	struct os_tcb *next_task = os_get_next_ready_task(highest_ready_pri);
+	prev_task = running_task;
 
 	// Make sure there is a higher priority task that's ready
 	if (next_task) {
-		struct os_tcb *prev_task = running_task;
 		running_task = next_task;
-		os_sw_context(prev_task, next_task);
+
+		// Let PendSV handle context switch
+		SW_CONTEXT();
+	}
+}
+
+static void os_tick(void)
+{
+	/* Naive approach, optimize later (don't want to have to loop over
+	* every task, only tasks in a timeout list) */
+	for (int i = 0; i < task_count; i++) {
+		struct os_tcb *task = &tasks[i];
+
+		if (task->timeout > 0) {
+			task->timeout--;
+			if (task->timeout == 0)
+				os_task_set_state(task, TASK_READY);
+		}
 	}
 
-	OS_EXIT_CRITICAL();
+	os_schedule();
 }
 
 static void os_list_wake_high_pri(struct os_tcb **list)
@@ -251,20 +216,28 @@ static void os_list_wake_high_pri(struct os_tcb **list)
  **************************************************************************************************/
 void os_init(void)
 {
-	os_task_create(os_idle_task_entry, NULL, idle_os_task_stack,
-			IDLE_TASK_STACK_SZ, 0);
+	os_task_create(os_idle_task_entry, NULL, idle_os_task_stack, IDLE_TASK_STACK_SZ, 0);
 }
 
 void os_start(void)
 {
-	os_schedule();
+	// Start SysTick
+	STK_LOAD |= ((CPU_CLK_SPEED / CLOCK_RATE_HZ) - 1);
+	STK_VAL = 0;
+	STK_CTRL |= (STK_CTRL_CPU_CLK | STK_CTRL_EN_INT | STK_CTRL_ENABLE);
 
-	#ifdef USE_SIM
-	pthread_t t;
-	pthread_create(&t, NULL, os_tick, NULL);
-	#else
-	// Enable SysTick interrupt
-	#endif
+	/* Todo: Figure out a better way to handle below. Want to be able to call os_schedule()
+	immediately and have PendSV automaticlaly return into correct mode. */
+
+	// Set PSP as stack pointer in thread mode
+	asm volatile(
+		"mov R0, #0x02\n"
+		"msr control, R0\n"
+	);
+
+	// Set Idle as running task then context switch into it
+	running_task = &tasks[0];
+	SW_CONTEXT();
 }
 
 
@@ -278,15 +251,9 @@ uint8_t os_task_create(os_task_entry entry, void *arg, os_task_stack *stack_base
 	assert(task_count < MAX_NUM_TASKS);
 
 	struct os_tcb task = {
-		#ifdef USE_SIM
-		.sim_cond = PTHREAD_COND_INITIALIZER,
-		.sim_started = false,
-		#endif
-
 		.entry = entry,
 		.arg = arg,
-		.stack_base = stack_base,
-		.stack_sz = stack_sz,
+		.stack_pntr = stack_base + stack_sz,
 		.priority = priority,
 		.next_task = NULL,
 		.prev_task = NULL,
@@ -296,12 +263,39 @@ uint8_t os_task_create(os_task_entry entry, void *arg, os_task_stack *stack_base
 		.id = task_count
 	};
 
+	/* We need to manually hand-jam parts of the task's stack so it can be loaded in initially.
+	   When an exception (in our case, PendSV) is entered, the stack frame is built as follows:
+
+	   0x20 - SP begin  (-0)
+	   0x1C - xPSR      (-1)
+	   0x18 - PC        (-2)
+	   0x14 - LR        (-3)
+	   0x10 - R12       (-4)
+	   0x0C - R3        (-5)
+	   0x08 - R2        (-6)
+	   0x04 - R1        (-7)
+	   0x00 - R0        (-8)
+
+	   So, we need to manually build this first. We only care about PSR, which we need to ensure
+	   the Thumb-mode bit is set, PC which we set to the task's entry point, LR which we set to
+	   ensure the exception returns to the correct mode, and finally R0 which represents the
+	   argument to the task's entry function.
+
+	   If the SP isn't double-word aligned (8 bytes) the hardware will align it, so we need to
+	   take that into account below when we hand-jam into the appropriate index. First we check
+	   if the initial stack-pointer will be 8 byte aligned or not, and adjust the offset
+	   appropriately. Then we start placing the needed values into the appropriate spots in the
+	   stack. */
+	if (((int)task.stack_pntr % 8) != 0)
+		task.stack_pntr--;
+	*(task.stack_pntr - 1) = 0x1000000; // Sets Thumb-mode bit
+	*(task.stack_pntr - 2) = (uint32_t)task.entry;
+	*(task.stack_pntr - 3) = 0xFFFFFFFD; // Sets Thread mode with PSP
+	*(task.stack_pntr - 8) = (uint32_t)task.arg;
+	task.stack_pntr -= 16; // Decrement stack pointer to simulate 16 registers being pushed
+	
 	tasks[task_count] = task;
 	os_task_set_state(&tasks[task_count++], TASK_READY);
-
-	// Push entry as PC onto task's stack
-	// Push stack_base+stack_sz as SP onto task's stack
-	// Push other registers onto task's stack
 
 	if (priority > highest_priority)
 		highest_priority = priority;
@@ -311,16 +305,12 @@ uint8_t os_task_create(os_task_entry entry, void *arg, os_task_stack *stack_base
 
 void os_task_sleep(uint16_t ticks)
 {    
-	OS_ENTER_CRITICAL();
-
 	// Other functions that set task waiting will have already removed it from ready list
-	if (!running_task->waiting) {
+	if (!running_task->waiting)
 		os_list_remove_task(running_task, &ready_list[running_task->priority]);
-	}
 	
 	running_task->timeout = ticks;
 	os_task_set_state(running_task, TASK_BLOCKED);
-	OS_EXIT_CRITICAL();
 
 	os_schedule();
 }
@@ -357,9 +347,13 @@ enum OS_STATUS os_mutex_acquire(struct os_mutex *mutex, uint16_t timeout_ticks)
 		// TODO: Mostly redundant as os_task_wait removes from ready list
 		// We just don't want it removing from the wrong ready list
 		if (mutex->holding_task->priority < running_task->priority) {
-			os_list_remove_task(mutex->holding_task, &ready_list[mutex->holding_task->priority]);
+			os_list_remove_task(mutex->holding_task,
+						&ready_list[mutex->holding_task->priority]);
+
 			mutex->holding_task->priority = running_task->priority;
-			os_list_insert_task(mutex->holding_task, &ready_list[mutex->holding_task->priority]);
+
+			os_list_insert_task(mutex->holding_task,
+						&ready_list[mutex->holding_task->priority]);
 		}
 
 		if (os_task_wait(timeout_ticks, &mutex->blocked_list) == OS_TIMEOUT)
@@ -423,9 +417,8 @@ void os_queue_create(struct os_queue *queue, size_t length, uint8_t *storage, si
 
 enum OS_STATUS os_queue_insert(struct os_queue *queue, const void *item, uint16_t timeout_ticks)
 {
-	if (queue->full && os_task_wait(timeout_ticks, &queue->ins_blocked_list) == OS_TIMEOUT) {
+	if (queue->full && os_task_wait(timeout_ticks, &queue->ins_blocked_list) == OS_TIMEOUT)
 		return OS_TIMEOUT;
-	}
 
 	memcpy(queue->storage + queue->head, item, queue->item_sz);
 	queue->head = (queue->head + queue->item_sz) % queue->size;
@@ -502,42 +495,32 @@ enum OS_STATUS os_event_wait(struct os_event *event, uint8_t flags, uint16_t tim
 
 
 /***************************************************************************************************
- * Simulator Functions
+ * Port-Specific (Cortex-M3) Functions
  **************************************************************************************************/
-#ifdef USE_SIM
-void os_sim_thread_sleep(struct os_tcb *task)
+void SysTick_Handler(void)
 {
-	if (!task)
-		return;
-	
-	pthread_mutex_lock(&sim_sched_mtx);
-	while (running_task->id != task->id)
-		pthread_cond_wait(&task->sim_cond, &sim_sched_mtx);
-	pthread_mutex_unlock(&sim_sched_mtx);
+	os_tick();
 }
 
-void os_sim_thread_wake(struct os_tcb *task)
+void PendSV_Handler(void)
 {
-	pthread_mutex_lock(&sim_sched_mtx);
-	pthread_cond_signal(&task->sim_cond);
-	pthread_mutex_unlock(&sim_sched_mtx);
-}
-
-void os_sim_thread_sched_check(void)
-{
-	pthread_mutex_lock(&sim_sched_mtx);
-	if (sim_sched) {
-		sim_sched = false;
-		pthread_mutex_unlock(&sim_sched_mtx);
-		os_schedule();
-	} else {
-		pthread_mutex_unlock(&sim_sched_mtx);
+	// Store old context
+	if (prev_task) {
+		asm volatile(
+			"mrs r0, psp\n"
+			"mov r2, %0\n"
+			"stmdb r0!, {r4-r11}\n"
+			"str r0, [r2]\n"
+			: : "r"(&prev_task->stack_pntr)
+		);
 	}
-}
 
-void os_sim_main_wait(void)
-{
-	while (1)
-		sleep(1000);
+	// Load new context
+	asm volatile(
+		"mov r2, %0\n"
+		"ldr r0, [r2]\n"
+		"ldmia r0!, {r4-r11}\n"
+		"msr psp, r0\n"
+		: : "r"(&running_task->stack_pntr)
+	);
 }
-#endif
