@@ -8,17 +8,17 @@
 /* Config (modified by user) */
 #define MAX_NUM_TASKS 32
 #define MAX_PRIORITY_LEVEL 31
-#define CLOCK_RATE_HZ 100
+#define OS_CLK_HZ 100
+#define CPU_CLK_HZ 72000000UL
 
 /* Typedefs */
 typedef void (*os_task_entry)(void *);
-
 typedef uint32_t os_task_stack;
 
 /* Macros */
 #define OS_ENTER_CRITICAL() asm("CPSID I")
 #define OS_EXIT_CRITICAL() asm("CPSIE I")
-#define OS_MSEC_TO_TICKS(msec) (((msec) * CLOCK_RATE_HZ) / 1000)
+#define OS_MSEC_TO_TICKS(msec) (((msec) * OS_CLK_HZ) / 1000)
 #define OS_SEC_TO_TICKS(sec) (OS_MSEC_TO_TICKS((sec) * 1000))
 #define OS_QUEUE_SZ(length, item_sz) ((length) * (item_sz))
 
@@ -34,7 +34,7 @@ enum OS_STATUS {
 };
 
 /* Structs */
-// Consider rearranging members for efficient struct packing
+// TODO: Consider rearranging members for efficient struct packing
 struct os_tcb {
 	os_task_entry entry;
 	void *arg;

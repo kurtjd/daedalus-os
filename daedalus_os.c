@@ -4,7 +4,6 @@
 #include "daedalus_os.h"
 
 // Port-specific (Cortex-M3)
-#define CPU_CLK_SPEED 72000000UL
 #define STK_BASE 0xE000E010
 #define STK_CTRL ((*(volatile uint32_t *)(STK_BASE + 0x00)))
 #define STK_LOAD ((*(volatile uint32_t *)(STK_BASE + 0x04)))
@@ -19,9 +18,6 @@
     asm("isb"); \
 } while (0)
 
-// Idle Task
-#define IDLE_TASK_STACK_SZ 0xFF
-
 // Task-related variables
 static struct os_tcb tasks[MAX_NUM_TASKS];
 static int task_count = 0;
@@ -31,6 +27,7 @@ static struct os_tcb *ready_list[MAX_PRIORITY_LEVEL];
 static uint8_t highest_priority = 0;
 
 // Related to the idle task
+#define IDLE_TASK_STACK_SZ 32
 static os_task_stack idle_os_task_stack[IDLE_TASK_STACK_SZ];
 static uint32_t ticks_in_idle = 0;
 
@@ -62,15 +59,13 @@ static void os_list_insert_task(struct os_tcb *task, struct os_tcb **list)
 
 static void os_list_remove_task(struct os_tcb *task, struct os_tcb **list)
 {
-	if (task->next_task) {
+	if (task->next_task)
 		task->next_task->prev_task = task->prev_task;
-	}
 
-	if (task->prev_task) {
+	if (task->prev_task)
 		task->prev_task->next_task = task->next_task;
-	} else {
+	else
 		*list = task->next_task;
-	}
 	
 	task->next_task = NULL;
 	task->prev_task = NULL;
@@ -84,9 +79,8 @@ static struct os_tcb *os_list_get_high_pri(const struct os_tcb *list)
 
 	const struct os_tcb *high_task = task;
 	while (task) {
-		if (task->priority > high_task->priority) {
+		if (task->priority > high_task->priority)
 			high_task = task;
-		}
 
 		task = task->next_task;
 	}
@@ -138,9 +132,8 @@ static void os_task_wake(struct os_tcb *task, struct os_tcb **list)
 static uint8_t os_get_highest_ready_pri(void)
 {
 	for (int i = highest_priority; i >= 0; i--) {
-		if (ready_list[i]) {
+		if (ready_list[i])
 			return i;
-		}
 	}
 
 	// Shouldn't get here...
@@ -160,24 +153,18 @@ static struct os_tcb *os_get_next_ready_task(uint8_t priority)
 		return running_task->next_task;
 
 	// If no other tasks ready, return NULL so we don't do a context switch
-	if (running_task != ready_list[priority]) {
-		return ready_list[priority];
-	} else {
-		return NULL;
-	}
+	return ((running_task != ready_list[priority]) ? ready_list[priority] : NULL);
 }
 
 static void os_schedule(void)
 {
 	uint8_t highest_ready_pri = os_get_highest_ready_pri();
 	struct os_tcb *next_task = os_get_next_ready_task(highest_ready_pri);
-	prev_task = running_task;
 
-	// Make sure there is a higher priority task that's ready
+	// Make sure there is a higher priority task that's ready before context switch
 	if (next_task) {
+		prev_task = running_task;
 		running_task = next_task;
-
-		// Let PendSV handle context switch
 		SW_CONTEXT();
 	}
 }
@@ -221,8 +208,8 @@ void os_init(void)
 
 void os_start(void)
 {
-	// Start SysTick
-	STK_LOAD |= ((CPU_CLK_SPEED / CLOCK_RATE_HZ) - 1);
+	// Start SysTick so it fires at the rate specified by OS_CLK_HZ
+	STK_LOAD |= ((CPU_CLK_HZ / OS_CLK_HZ) - 1);
 	STK_VAL = 0;
 	STK_CTRL |= (STK_CTRL_CPU_CLK | STK_CTRL_EN_INT | STK_CTRL_ENABLE);
 
