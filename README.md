@@ -12,9 +12,9 @@ daedalus-os is a simple RTOS I'm developing mainly for learning purposes. The go
 :heavy_check_mark: Fully static memory allocation  
 :heavy_check_mark: Desktop simulator (uses OS threads to simulate context switching)  
 :heavy_check_mark: Context switching   
+:heavy_check_mark: ISR safe functions
 :x: Task messages  
 :x: Low-power idle task  
-:x: ISR safe functions
 
 ## Build
 daedalus-os is meant to be built alongside a larger project. Simply include daedalus_os.c in your project's source folder and daedalus_os.h in your project's include folder.

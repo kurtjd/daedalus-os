@@ -30,6 +30,7 @@ enum OS_TASK_STATE {
 
 enum OS_STATUS {
 	OS_SUCCESS,
+	OS_FAILED,
 	OS_TIMEOUT
 };
 
@@ -94,13 +95,18 @@ void os_mutex_release(struct os_mutex *mutex);
 void os_semph_create(struct os_semph *semph, uint8_t count);
 enum OS_STATUS os_semph_take(struct os_semph *semph, uint16_t timeout_ticks);
 void os_semph_give(struct os_semph *semph);
+enum OS_STATUS os_semph_take_isr(struct os_semph *semph);
+void os_semph_give_isr(struct os_semph *semph);
 
 void os_queue_create(struct os_queue *queue, size_t length, uint8_t *storage, size_t item_sz);
 enum OS_STATUS os_queue_insert(struct os_queue *queue, const void *item, uint16_t timeout_ticks);
 enum OS_STATUS os_queue_retrieve(struct os_queue *queue, void *item, uint16_t timeout_ticks);
+enum OS_STATUS os_queue_insert_isr(struct os_queue *queue, const void *item);
+enum OS_STATUS os_queue_retrieve_isr(struct os_queue *queue, void *item);
 
 void os_event_create(struct os_event *event);
 void os_event_set(struct os_event *event, uint8_t flags);
 enum OS_STATUS os_event_wait(struct os_event *event, uint8_t flags, uint16_t timeout_ticks);
+void os_event_set_isr(struct os_event *event, uint8_t flags);
 
 #endif

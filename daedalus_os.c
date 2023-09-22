@@ -1,4 +1,3 @@
-#include <assert.h>
 #include <stdio.h>
 #include <string.h>
 #include "daedalus_os.h"
@@ -91,14 +90,8 @@ static struct os_tcb *os_list_get_high_pri(const struct os_tcb *list)
 static void os_task_set_state(struct os_tcb *task, enum OS_TASK_STATE state)
 {
 	task->state = state;
-
-	switch (state) {
-	case TASK_READY:
+	if (state == TASK_READY)
 		os_list_insert_task(task, &ready_list[task->priority]);
-		break;
-	case TASK_BLOCKED:
-		break;
-	}
 }
 
 static enum OS_STATUS os_task_wait(uint16_t timeout_ticks, struct os_tcb **blocked_list)
@@ -137,7 +130,6 @@ static uint8_t os_get_highest_ready_pri(void)
 	}
 
 	// Shouldn't get here...
-	assert(false);
 	return 0;
 }
 
@@ -203,8 +195,6 @@ void os_start(void)
 uint8_t os_task_create(os_task_entry entry, void *arg, os_task_stack *stack_base, size_t stack_sz,
 			uint8_t priority)
 {
-	assert(task_count < MAX_NUM_TASKS);
-
 	struct os_tcb task = {
 		.entry = entry,
 		.arg = arg,
@@ -274,7 +264,7 @@ void os_task_yield(void)
 {
 	/* For now just immediately call scheduler. Yielding has little use in
 	 * preemptive RTOS as highest priority task is already running. However
-	 * useful if you have roud-robin tasks and want to immediately call the
+	 * useful if you have round-robin tasks and want to immediately call the
 	 * next one. */
 	SW_CONTEXT();
 }
@@ -358,11 +348,45 @@ void os_semph_give(struct os_semph *semph)
 	os_list_wake_high_pri(&semph->blocked_list);
 }
 
+enum OS_STATUS os_semph_take_isr(struct os_semph *semph)
+{
+	if (semph->count <= 0)
+		return OS_FAILED;
+	
+	semph->count--;
+	return OS_SUCCESS;
+}
+
+void os_semph_give_isr(struct os_semph *semph)
+{
+	os_semph_give(semph);
+}
+
 
 
 /***************************************************************************************************
  * Queue Functions
  **************************************************************************************************/
+static void os_queue_ins_common(struct os_queue *queue, const void *item)
+{
+	memcpy(queue->storage + queue->head, item, queue->item_sz);
+	queue->head = (queue->head + queue->item_sz) % queue->size;
+
+	if (queue->head == queue->tail)
+		queue->full = true;
+
+	os_list_wake_high_pri(&queue->rec_blocked_list);
+}
+
+static void os_queue_ret_common(struct os_queue *queue, void *item)
+{
+	memcpy(item, queue->storage + queue->tail, queue->item_sz);
+	queue->tail = (queue->tail + queue->item_sz) % queue->size;
+	queue->full = false;
+
+	os_list_wake_high_pri(&queue->ins_blocked_list);
+}
+
 void os_queue_create(struct os_queue *queue, size_t length, uint8_t *storage, size_t item_sz)
 {
 	queue->size = length * item_sz;
@@ -380,13 +404,7 @@ enum OS_STATUS os_queue_insert(struct os_queue *queue, const void *item, uint16_
 	if (queue->full && os_task_wait(timeout_ticks, &queue->ins_blocked_list) == OS_TIMEOUT)
 		return OS_TIMEOUT;
 
-	memcpy(queue->storage + queue->head, item, queue->item_sz);
-	queue->head = (queue->head + queue->item_sz) % queue->size;
-
-	if (queue->head == queue->tail)
-		queue->full = true;
-
-	os_list_wake_high_pri(&queue->rec_blocked_list);
+	os_queue_ins_common(queue, item);
 	return OS_SUCCESS;
 }
 
@@ -396,11 +414,26 @@ enum OS_STATUS os_queue_retrieve(struct os_queue *queue, void *item, uint16_t ti
 	if (queue_empty && os_task_wait(timeout_ticks, &queue->rec_blocked_list) == OS_TIMEOUT)
 		return OS_TIMEOUT;
 	
-	memcpy(item, queue->storage + queue->tail, queue->item_sz);
-	queue->tail = (queue->tail + queue->item_sz) % queue->size;
-	queue->full = false;
+	os_queue_ret_common(queue, item);
+	return OS_SUCCESS;
+}
 
-	os_list_wake_high_pri(&queue->ins_blocked_list);
+enum OS_STATUS os_queue_insert_isr(struct os_queue *queue, const void *item)
+{
+	if (queue->full)
+		return OS_FAILED;
+	
+	os_queue_ins_common(queue, item);
+	return OS_SUCCESS;
+}
+
+enum OS_STATUS os_queue_retrieve_isr(struct os_queue *queue, void *item)
+{
+	bool queue_empty = !queue->full && queue->head == queue->tail;
+	if (queue_empty)
+		return OS_FAILED;
+	
+	os_queue_ret_common(queue, item);
 	return OS_SUCCESS;
 }
 
@@ -452,6 +485,10 @@ enum OS_STATUS os_event_wait(struct os_event *event, uint8_t flags, uint16_t tim
 	return OS_SUCCESS;
 }
 
+void os_event_set_isr(struct os_event *event, uint8_t flags)
+{
+	os_event_set(event, flags);
+}
 
 
 /***************************************************************************************************
