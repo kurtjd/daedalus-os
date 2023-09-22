@@ -1,4 +1,3 @@
-#include <stdio.h>
 #include <string.h>
 #include "daedalus_os.h"
 
@@ -492,7 +491,7 @@ void os_event_set_isr(struct os_event *event, uint8_t flags)
 
 
 /***************************************************************************************************
- * Port-Specific (Cortex-M3) Functions
+ * Port-Specific (Cortex-M3) Interrupts
  **************************************************************************************************/
 void SysTick_Handler(void)
 {
