@@ -35,7 +35,7 @@ static uint32_t ticks_in_idle = 0;
 
 
 /***************************************************************************************************
- * Private/Helper Functions
+ * General OS Functions
  **************************************************************************************************/
 static void os_idle_task_entry(void *data)
 {
@@ -45,6 +45,61 @@ static void os_idle_task_entry(void *data)
 	}
 }
 
+static uint8_t os_get_highest_ready_pri(void)
+{
+	for (int i = highest_priority; i >= 0; i--) {
+		if (ready_list[i])
+			return i;
+	}
+
+	// Shouldn't get here...
+	return 0;
+}
+
+static struct os_tcb *os_get_next_ready_task(uint8_t priority)
+{
+	// Starting first task (maybe set running task in os_start)
+	if (!running_task)
+		return ready_list[priority];
+	
+	// Allows for round-robin
+	if (running_task->state != TASK_BLOCKED && running_task->priority == priority
+		&& running_task->next_task)
+		return running_task->next_task;
+
+	// If no other tasks ready, return NULL so we don't do a context switch
+	return ((running_task != ready_list[priority]) ? ready_list[priority] : NULL);
+}
+
+void os_init(void)
+{
+	os_task_create(os_idle_task_entry, NULL, idle_os_task_stack, IDLE_TASK_STACK_SZ, 0);
+}
+
+void os_start(void)
+{
+	// Start SysTick so it fires at the rate specified by OS_CLK_HZ
+	STK_LOAD |= ((CPU_CLK_HZ / OS_CLK_HZ) - 1);
+	STK_VAL = 0;
+	STK_CTRL |= (STK_CTRL_CPU_CLK | STK_CTRL_EN_INT | STK_CTRL_ENABLE);
+
+	/* Todo: Figure out a better way to handle below. Want to be able to call SW_CONTEXT()
+	immediately and have PendSV automaticlaly return into correct mode. */
+
+	// Set PSP as stack pointer in thread mode
+	asm volatile(
+		"mov R0, #0x02\n"
+		"msr control, R0\n"
+	);
+
+	SW_CONTEXT();
+}
+
+
+
+/***************************************************************************************************
+ * List Functions
+ **************************************************************************************************/
 static void os_list_insert_task(struct os_tcb *task, struct os_tcb **list)
 {
 	if (!*list) {
@@ -87,6 +142,11 @@ static struct os_tcb *os_list_get_high_pri(const struct os_tcb *list)
 	return (struct os_tcb *)high_task;
 }
 
+
+
+/***************************************************************************************************
+ * Task Functions
+ **************************************************************************************************/
 static void os_task_set_state(struct os_tcb *task, enum OS_TASK_STATE state)
 {
 	task->state = state;
@@ -122,32 +182,6 @@ static void os_task_wake(struct os_tcb *task, struct os_tcb **list)
 	os_task_set_state(task, TASK_READY);
 }
 
-static uint8_t os_get_highest_ready_pri(void)
-{
-	for (int i = highest_priority; i >= 0; i--) {
-		if (ready_list[i])
-			return i;
-	}
-
-	// Shouldn't get here...
-	return 0;
-}
-
-static struct os_tcb *os_get_next_ready_task(uint8_t priority)
-{
-	// Starting first task (maybe set running task in os_start)
-	if (!running_task)
-		return ready_list[priority];
-	
-	// Allows for round-robin
-	if (running_task->state != TASK_BLOCKED && running_task->priority == priority
-		&& running_task->next_task)
-		return running_task->next_task;
-
-	// If no other tasks ready, return NULL so we don't do a context switch
-	return ((running_task != ready_list[priority]) ? ready_list[priority] : NULL);
-}
-
 static void os_list_wake_high_pri(struct os_tcb **list)
 {
 	// In task_wake we remove from blocked list and add to ready list
@@ -158,40 +192,6 @@ static void os_list_wake_high_pri(struct os_tcb **list)
 	}
 }
 
-
-
-/***************************************************************************************************
- * General OS Functions
- **************************************************************************************************/
-void os_init(void)
-{
-	os_task_create(os_idle_task_entry, NULL, idle_os_task_stack, IDLE_TASK_STACK_SZ, 0);
-}
-
-void os_start(void)
-{
-	// Start SysTick so it fires at the rate specified by OS_CLK_HZ
-	STK_LOAD |= ((CPU_CLK_HZ / OS_CLK_HZ) - 1);
-	STK_VAL = 0;
-	STK_CTRL |= (STK_CTRL_CPU_CLK | STK_CTRL_EN_INT | STK_CTRL_ENABLE);
-
-	/* Todo: Figure out a better way to handle below. Want to be able to call SW_CONTEXT()
-	immediately and have PendSV automaticlaly return into correct mode. */
-
-	// Set PSP as stack pointer in thread mode
-	asm volatile(
-		"mov R0, #0x02\n"
-		"msr control, R0\n"
-	);
-
-	SW_CONTEXT();
-}
-
-
-
-/***************************************************************************************************
- * Task Functions
- **************************************************************************************************/
 uint8_t os_task_create(os_task_entry entry, void *arg, os_task_stack *stack_base, size_t stack_sz,
 			uint8_t priority)
 {
