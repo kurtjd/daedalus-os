@@ -33,8 +33,6 @@ daedalus-os is meant to be built alongside a larger project. Simply include `dae
 Here is an example of how you could incorporate daedalus-os into your project. Please see `daedalus_os.h` for the complete API.
 
 ```c
-#include "sysclk.h"
-#include "gpio.h"
 #include "uart.h"
 #include "led.h"
 #include "daedalus_os.h"
@@ -68,18 +66,17 @@ void blink_task(void *data)
 }
 
 int main(void) {
+    uart_init(9600);
+    led_enable();
+
     os_task_stack pt1_stk[TASK_STACK_SZ];
     os_task_stack pt2_stk[TASK_STACK_SZ];
     os_task_stack pt3_stk[TASK_STACK_SZ];
     os_task_stack bt_stk[TASK_STACK_SZ];
 
-    set_sysclk(72);
-    gpio_init(GPIOA);
-    uart_init(9600);
-    led_enable();
+    os_init();
 
     os_mutex_create(&uart_mtx);
-    os_init();
     os_task_create(print_task, "I am Task A!\n", pt1_stk, TASK_STACK_SZ, 1);
     os_task_create(print_task, "I am Task B!\n", pt2_stk, TASK_STACK_SZ, 1);
     os_task_create(print_task, "I am Task C!\n", pt3_stk, TASK_STACK_SZ, 1);
