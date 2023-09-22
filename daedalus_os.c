@@ -156,43 +156,13 @@ static struct os_tcb *os_get_next_ready_task(uint8_t priority)
 	return ((running_task != ready_list[priority]) ? ready_list[priority] : NULL);
 }
 
-static void os_schedule(void)
-{
-	uint8_t highest_ready_pri = os_get_highest_ready_pri();
-	struct os_tcb *next_task = os_get_next_ready_task(highest_ready_pri);
-
-	// Make sure there is a higher priority task that's ready before context switch
-	if (next_task) {
-		prev_task = running_task;
-		running_task = next_task;
-		SW_CONTEXT();
-	}
-}
-
-static void os_tick(void)
-{
-	/* Naive approach, optimize later (don't want to have to loop over
-	* every task, only tasks in a timeout list) */
-	for (int i = 0; i < task_count; i++) {
-		struct os_tcb *task = &tasks[i];
-
-		if (task->timeout > 0) {
-			task->timeout--;
-			if (task->timeout == 0)
-				os_task_set_state(task, TASK_READY);
-		}
-	}
-
-	os_schedule();
-}
-
 static void os_list_wake_high_pri(struct os_tcb **list)
 {
 	// In task_wake we remove from blocked list and add to ready list
 	struct os_tcb *next_task = os_list_get_high_pri(*list);
 	if (next_task) {
 		os_task_wake(next_task, list);
-		os_schedule();
+		SW_CONTEXT();
 	}
 }
 
@@ -213,7 +183,7 @@ void os_start(void)
 	STK_VAL = 0;
 	STK_CTRL |= (STK_CTRL_CPU_CLK | STK_CTRL_EN_INT | STK_CTRL_ENABLE);
 
-	/* Todo: Figure out a better way to handle below. Want to be able to call os_schedule()
+	/* Todo: Figure out a better way to handle below. Want to be able to call SW_CONTEXT()
 	immediately and have PendSV automaticlaly return into correct mode. */
 
 	// Set PSP as stack pointer in thread mode
@@ -222,8 +192,6 @@ void os_start(void)
 		"msr control, R0\n"
 	);
 
-	// Set Idle as running task then context switch into it
-	running_task = &tasks[0];
 	SW_CONTEXT();
 }
 
@@ -299,7 +267,7 @@ void os_task_sleep(uint16_t ticks)
 	running_task->timeout = ticks;
 	os_task_set_state(running_task, TASK_BLOCKED);
 
-	os_schedule();
+	SW_CONTEXT();
 }
 
 void os_task_yield(void)
@@ -308,7 +276,7 @@ void os_task_yield(void)
 	 * preemptive RTOS as highest priority task is already running. However
 	 * useful if you have roud-robin tasks and want to immediately call the
 	 * next one. */
-	os_schedule();
+	SW_CONTEXT();
 }
 
 const struct os_tcb *os_task_query(uint8_t task_id)
@@ -355,8 +323,13 @@ enum OS_STATUS os_mutex_acquire(struct os_mutex *mutex, uint16_t timeout_ticks)
 void os_mutex_release(struct os_mutex *mutex)
 {
 	mutex->holding_task->priority = mutex->holding_task_orig_pri;
-	mutex->holding_task = NULL;
-	os_list_wake_high_pri(&mutex->blocked_list);
+
+	// If another task is waiting, we wake it but don't clear the holding task
+	// This is so other tasks still think this mutex is blocked and can't snag it
+	if (mutex->blocked_list)
+		os_list_wake_high_pri(&mutex->blocked_list);
+	else
+		mutex->holding_task = NULL;
 }
 
 
@@ -461,7 +434,7 @@ void os_event_set(struct os_event *event, uint8_t flags)
 	}
 
 	if (task_woken)
-		os_schedule();
+		SW_CONTEXT();
 }
 
 // Waits for ALL flags in event to be set, always clears flags on exit
@@ -486,28 +459,49 @@ enum OS_STATUS os_event_wait(struct os_event *event, uint8_t flags, uint16_t tim
  **************************************************************************************************/
 void SysTick_Handler(void)
 {
-	os_tick();
+	/* Naive approach, optimize later (don't want to have to loop over
+	* every task, only tasks in a timeout list) */
+	for (int i = 0; i < task_count; i++) {
+		struct os_tcb *task = &tasks[i];
+
+		if (task->timeout > 0) {
+			task->timeout--;
+			if (task->timeout == 0)
+				os_task_set_state(task, TASK_READY);
+		}
+	}
+
+	SW_CONTEXT();
 }
 
 void PendSV_Handler(void)
 {
-	// Store old context
-	if (prev_task) {
+	uint8_t highest_ready_pri = os_get_highest_ready_pri();
+	struct os_tcb *next_task = os_get_next_ready_task(highest_ready_pri);
+
+	// Make sure there is a higher priority task that's ready before context switch
+	if (next_task) {
+		prev_task = running_task;
+		running_task = next_task;
+		
+		// Store old context
+		if (prev_task) {
+			asm volatile(
+				"mrs r0, psp\n"
+				"mov r2, %0\n"
+				"stmdb r0!, {r4-r11}\n"
+				"str r0, [r2]\n"
+				: : "r"(&prev_task->stack_pntr)
+			);
+		}
+
+		// Load new context
 		asm volatile(
-			"mrs r0, psp\n"
 			"mov r2, %0\n"
-			"stmdb r0!, {r4-r11}\n"
-			"str r0, [r2]\n"
-			: : "r"(&prev_task->stack_pntr)
+			"ldr r0, [r2]\n"
+			"ldmia r0!, {r4-r11}\n"
+			"msr psp, r0\n"
+			: : "r"(&running_task->stack_pntr)
 		);
 	}
-
-	// Load new context
-	asm volatile(
-		"mov r2, %0\n"
-		"ldr r0, [r2]\n"
-		"ldmia r0!, {r4-r11}\n"
-		"msr psp, r0\n"
-		: : "r"(&running_task->stack_pntr)
-	);
 }
